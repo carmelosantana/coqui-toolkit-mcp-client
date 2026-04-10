@@ -34,7 +34,7 @@ final class OAuthHandler
      * Opens the user's browser to the auth URL, waits for the callback,
      * exchanges the code for tokens, and stores them.
      *
-     * @param array{authUrl: string, tokenUrl: string, clientId?: string, scopes?: list<string>} $authConfig
+    * @param array{authUrl?: string, tokenUrl?: string, clientId?: string, scopes?: list<string>} $authConfig
      *
      * @return array{access_token: string, refresh_token?: string, expires_at?: int}
      *
@@ -106,7 +106,7 @@ final class OAuthHandler
     /**
      * Get a valid access token for a server, refreshing if expired.
      *
-     * @param array{tokenUrl: string, clientId?: string} $authConfig
+    * @param array{tokenUrl?: string, clientId?: string} $authConfig
      *
      * @return string|null Access token or null if no tokens stored
      */
@@ -132,6 +132,10 @@ final class OAuthHandler
             $tokenUrl = $authConfig['tokenUrl'] ?? '';
             $clientId = $authConfig['clientId'] ?? $serverName;
 
+            if ($tokenUrl === '') {
+                return null;
+            }
+
             try {
                 $newTokens = $this->refreshToken($tokenUrl, $refreshToken, $clientId);
                 $this->storeTokens($serverName, $newTokens);
@@ -142,7 +146,7 @@ final class OAuthHandler
             }
         }
 
-        return $tokens['access_token'] ?? null;
+        return $tokens['access_token'];
     }
 
     /**

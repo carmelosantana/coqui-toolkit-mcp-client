@@ -253,7 +253,7 @@ final class StdioTransport implements TransportInterface
 
             try {
                 $message = Message::fromJson($line);
-            } catch (\JsonException | \InvalidArgumentException) {
+            } catch (\InvalidArgumentException) {
                 // Skip unparseable output (server may emit debug text)
                 continue;
             }
@@ -384,9 +384,7 @@ final class StdioTransport implements TransportInterface
      */
     private function getParentEnv(): array
     {
-        $env = getenv();
-
-        return is_array($env) ? $env : [];
+        return getenv();
     }
 
     public function __destruct()

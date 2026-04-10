@@ -9,15 +9,13 @@ namespace CoquiBot\Toolkits\Mcp\Exception;
  */
 final class McpToolCallException extends \RuntimeException
 {
-    /**
-     * @param array<int, array{type: string, text?: string}> $content
-     */
+    /** @param array<int, mixed> $content */
     public static function fromErrorContent(string $toolName, array $content): self
     {
         $texts = [];
 
         foreach ($content as $item) {
-            if (isset($item['text'])) {
+            if (is_array($item) && isset($item['text'])) {
                 $texts[] = $item['text'];
             }
         }

@@ -136,7 +136,7 @@ final class McpClient
      * @param string               $name      Tool name (as returned by listTools)
      * @param array<string, mixed> $arguments Tool arguments
      *
-     * @return array<int, array{type: string, text?: string}> Content array from the server
+    * @return array<int, mixed> Content array from the server
      *
      * @throws McpConnectionException
      * @throws McpProtocolException

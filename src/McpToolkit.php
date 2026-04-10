@@ -35,7 +35,7 @@ final class McpToolkit implements ToolkitInterface
         private readonly string $workspacePath,
     ) {
         $this->config = new McpConfig($this->workspacePath);
-        $this->manager = new McpServerManager($this->config, $this->workspacePath);
+        $this->manager = new McpServerManager($this->config);
         $this->oauthHandler = new OAuthHandler($this->workspacePath);
         $this->boot();
     }
@@ -182,6 +182,7 @@ final class McpToolkit implements ToolkitInterface
         );
     }
 
+    /** @param array<string, mixed> $input */
     private function executeMcpAction(array $input): ToolResult
     {
         $action = trim((string) ($input['action'] ?? ''));

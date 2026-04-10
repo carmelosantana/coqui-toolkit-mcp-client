@@ -43,7 +43,6 @@ final class McpServerManager
 
     public function __construct(
         private readonly McpConfig $config,
-        private readonly string $workspacePath,
         private readonly int $timeout = 30,
     ) {
         $this->envResolver = new EnvResolver();
@@ -117,7 +116,7 @@ final class McpServerManager
         $tools = $client->listTools();
 
         $this->clients[$name] = $client;
-        $this->serverTools[$name] = $tools;
+        $this->serverTools[$name] = array_values($tools);
         unset($this->errors[$name]);
     }
 
@@ -180,7 +179,7 @@ final class McpServerManager
      * @param string               $namespacedName Full namespaced tool name
      * @param array<string, mixed> $arguments      Tool arguments
      *
-     * @return array<int, array{type: string, text?: string}> Content array
+    * @return array<int, mixed> Content array
      */
     public function callTool(string $namespacedName, array $arguments): array
     {
@@ -389,7 +388,7 @@ final class McpServerManager
     /**
      * Format MCP content array into a string for ToolResult.
      *
-     * @param array<int, array{type: string, text?: string}> $content
+     * @param array<int, mixed> $content
      */
     private function formatContent(array $content): string
     {
@@ -400,14 +399,15 @@ final class McpServerManager
                 continue;
             }
 
-            $type = $item['type'] ?? 'text';
+            $type = isset($item['type']) ? (string) $item['type'] : 'text';
 
             if ($type === 'text' && isset($item['text'])) {
                 $parts[] = (string) $item['text'];
             } elseif ($type === 'image' && isset($item['data'])) {
-                $parts[] = sprintf('[Image: %s, %d bytes]', $item['mimeType'] ?? 'unknown', strlen((string) $item['data']));
+                $mimeType = isset($item['mimeType']) ? (string) $item['mimeType'] : 'unknown';
+                $parts[] = sprintf('[Image: %s, %d bytes]', $mimeType, strlen((string) $item['data']));
             } elseif ($type === 'resource' && isset($item['resource'])) {
-                $resource = $item['resource'];
+                $resource = is_array($item['resource']) ? $item['resource'] : [];
                 $text = $resource['text'] ?? null;
                 $uri = $resource['uri'] ?? 'unknown';
 
