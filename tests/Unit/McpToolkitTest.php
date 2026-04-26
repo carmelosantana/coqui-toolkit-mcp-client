@@ -2,6 +2,7 @@
 
 declare(strict_types=1);
 
+use CarmeloSantana\PHPAgents\Enum\ToolResultStatus;
 use CoquiBot\Toolkits\Mcp\McpToolkit;
 
 test('mcp toolkit exposes a repl command handler', function () {
@@ -38,6 +39,39 @@ test('mcp toolkit exposes no child toolkits when no servers are connected', func
     $toolkit = new McpToolkit($path);
 
     expect($toolkit->childToolkits())->toBe([]);
+
+    rmdir($path);
+});
+
+test('mcp toolkit fromCoquiContext applies MCP stdio policy to management actions', function () {
+    $path = sys_get_temp_dir() . '/mcp-toolkit-test-' . uniqid();
+    mkdir($path, 0o755, true);
+
+    $config = new class {
+        public function get(string $key): mixed
+        {
+            return match ($key) {
+                'agents.defaults.mcp.allowedStdioCommands' => [['npx', '-y', '@modelcontextprotocol/server-github']],
+                'agents.defaults.mcp.deniedStdioCommands' => [],
+                default => null,
+            };
+        }
+    };
+
+    $toolkit = McpToolkit::fromCoquiContext([
+        'workspacePath' => $path,
+        'config' => $config,
+    ]);
+
+    $result = $toolkit->tools()[0]->execute([
+        'action' => 'add',
+        'server' => 'fetch',
+        'command' => 'uvx',
+        'args' => 'mcp-server-fetch',
+    ]);
+
+    expect($result->status)->toBe(ToolResultStatus::Error)
+        ->and($result->content)->toContain('allowed policy');
 
     rmdir($path);
 });

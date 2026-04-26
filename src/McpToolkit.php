@@ -17,6 +17,7 @@ use CoquiBot\Toolkits\Mcp\Command\McpCommandHandler;
 use CoquiBot\Toolkits\Mcp\Auth\OAuthHandler;
 use CoquiBot\Toolkits\Mcp\Config\McpConfig;
 use CoquiBot\Toolkits\Mcp\Support\McpManagementFormatter;
+use CoquiBot\Toolkits\Mcp\Support\McpServerPolicy;
 use CoquiBot\Toolkits\Mcp\Support\ServerLoadingModeStore;
 
 /**
@@ -42,14 +43,34 @@ final class McpToolkit implements ToolkitInterface, ReplCommandProvider, Composi
 
     public function __construct(
         private readonly string $workspacePath,
+        ?McpServerPolicy $policy = null,
     ) {
         $this->config = new McpConfig($this->workspacePath);
         $this->manager = new McpServerManager($this->config);
         $this->oauthHandler = new OAuthHandler($this->workspacePath);
         $this->loadingStore = new ServerLoadingModeStore($this->workspacePath);
-        $this->service = new McpManagementService($this->config, $this->manager, $this->oauthHandler, $this->loadingStore);
+        $this->service = new McpManagementService($this->config, $this->manager, $this->oauthHandler, $this->loadingStore, $policy);
         $this->formatter = new McpManagementFormatter();
         $this->boot();
+    }
+
+    /**
+     * @param array<string, mixed> $context
+     */
+    public static function fromCoquiContext(array $context): self
+    {
+        $workspace = self::resolveWorkspacePath($context['workspacePath'] ?? null);
+        $config = $context['config'] ?? null;
+        $policy = null;
+
+        if (is_object($config) && method_exists($config, 'get')) {
+            $policy = McpServerPolicy::fromConfigValues(
+                $config->get('agents.defaults.mcp.allowedStdioCommands'),
+                $config->get('agents.defaults.mcp.deniedStdioCommands'),
+            );
+        }
+
+        return new self($workspace, $policy);
     }
 
     /**
@@ -57,15 +78,7 @@ final class McpToolkit implements ToolkitInterface, ReplCommandProvider, Composi
      */
     public static function fromEnv(): self
     {
-        $workspace = getenv('COQUI_WORKSPACE');
-
-        if ($workspace === false || $workspace === '') {
-            // Fallback: CWD + .workspace
-            $cwd = getcwd() ?: '.';
-            $workspace = $cwd . '/.workspace';
-        }
-
-        return new self($workspace);
+        return new self(self::resolveWorkspacePath(getenv('COQUI_WORKSPACE')));
     }
 
     /**
@@ -136,6 +149,17 @@ final class McpToolkit implements ToolkitInterface, ReplCommandProvider, Composi
         if ($enabledServers !== []) {
             $this->manager->connectAll();
         }
+    }
+
+    private static function resolveWorkspacePath(mixed $workspace): string
+    {
+        if (is_string($workspace) && $workspace !== '') {
+            return $workspace;
+        }
+
+        $cwd = getcwd() ?: '.';
+
+        return $cwd . '/.workspace';
     }
 
     /**

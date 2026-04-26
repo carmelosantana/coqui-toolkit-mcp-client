@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace CoquiBot\Toolkits\Mcp;
 
+use CarmeloSantana\PHPAgents\Contract\ToolInterface;
 use CarmeloSantana\PHPAgents\Tool\Tool;
 use CarmeloSantana\PHPAgents\Tool\ToolResult;
 use CarmeloSantana\PHPAgents\Tool\Parameter\Parameter;
@@ -150,7 +151,7 @@ final class McpServerManager
      *
      * Tools are namespaced as mcp_{servername}_{toolname}.
      *
-     * @return Tool[]
+    * @return list<ToolInterface>
      */
     public function getTools(): array
     {
@@ -176,7 +177,7 @@ final class McpServerManager
     /**
      * Get discovered tools for one connected MCP server as Tool objects.
      *
-     * @return Tool[]
+    * @return list<ToolInterface>
      */
     public function getToolsForServer(string $serverName): array
     {

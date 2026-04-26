@@ -6,11 +6,14 @@ namespace CoquiBot\Toolkits\Mcp\Support;
 
 /**
  * Shared human-readable formatting for MCP REPL and tool output.
+ *
+ * @phpstan-import-type McpServerList from \CoquiBot\Toolkits\Mcp\McpManagementService
+ * @phpstan-import-type McpServerSnapshot from \CoquiBot\Toolkits\Mcp\McpManagementService
  */
 final class McpManagementFormatter
 {
     /**
-    * @param array<string, array{name: string, connected: bool, disabled: bool, loadingMode: string, serverName: ?string, serverVersion: ?string, toolCount: int, error: ?string, instructions: ?string, command: ?string, args: list<string>, env: array<string, string>, audit: array{last_connected_at: ?string, last_connection_error: ?string, last_connection_duration_ms: ?int, last_disconnected_at: ?string, last_tested_at: ?string, last_test_succeeded: ?bool, last_test_error: ?string, last_test_duration_ms: ?int, last_tool_discovery_count: ?int}}>} $servers
+     * @param McpServerList $servers
      */
     public function formatServerList(array $servers): string
     {
@@ -45,14 +48,14 @@ final class McpManagementFormatter
     }
 
     /**
-      * @param array{name: string, connected: bool, disabled: bool, loadingMode: string, serverName: ?string, serverVersion: ?string, toolCount: int, error: ?string, instructions: ?string, command: ?string, args: list<string>, env: array<string, string>, audit: array{last_connected_at: ?string, last_connection_error: ?string, last_connection_duration_ms: ?int, last_disconnected_at: ?string, last_tested_at: ?string, last_test_succeeded: ?bool, last_test_error: ?string, last_test_duration_ms: ?int, last_tool_discovery_count: ?int}} $server
+         * @param McpServerSnapshot $server
      */
     public function formatServerStatus(array $server): string
     {
         $lines = [sprintf('MCP Server: %s', $server['name']), ''];
         $lines[] = sprintf('  Status: %s', $server['connected'] ? 'CONNECTED' : 'DISCONNECTED');
         $lines[] = sprintf('  Disabled: %s', $server['disabled'] ? 'yes' : 'no');
-          $lines[] = sprintf('  Loading: %s', $server['loadingMode']);
+                $lines[] = sprintf('  Loading: %s', $server['loadingMode']);
 
         if ($server['serverName'] !== null) {
             $lines[] = sprintf('  Server Name: %s', $server['serverName']);

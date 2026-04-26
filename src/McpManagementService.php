@@ -8,15 +8,20 @@ use CarmeloSantana\PHPAgents\Contract\ToolInterface;
 use CoquiBot\Toolkits\Mcp\Auth\OAuthHandler;
 use CoquiBot\Toolkits\Mcp\Config\McpConfig;
 use CoquiBot\Toolkits\Mcp\Support\ArgumentTokenizer;
+use CoquiBot\Toolkits\Mcp\Support\McpServerPolicy;
 use CoquiBot\Toolkits\Mcp\Support\ServerLoadingModeStore;
 
 /**
  * Shared MCP server management service used by tool, REPL, and API adapters.
+ *
+ * @phpstan-type McpAudit array{last_connected_at: ?string, last_connection_error: ?string, last_connection_duration_ms: ?int, last_disconnected_at: ?string, last_tested_at: ?string, last_test_succeeded: ?bool, last_test_error: ?string, last_test_duration_ms: ?int, last_tool_discovery_count: ?int}
+ * @phpstan-type McpServerSnapshot array{name: string, connected: bool, disabled: bool, loadingMode: string, serverName: ?string, serverVersion: ?string, toolCount: int, error: ?string, instructions: ?string, command: ?string, args: list<string>, env: array<string, string>, audit: McpAudit}
+ * @phpstan-type McpServerList array<string, McpServerSnapshot>
  */
 final class McpManagementService
 {
     /**
-     * @var array<string, array{last_connected_at: ?string, last_connection_error: ?string, last_connection_duration_ms: ?int, last_disconnected_at: ?string, last_tested_at: ?string, last_test_succeeded: ?bool, last_test_error: ?string, last_test_duration_ms: ?int, last_tool_discovery_count: ?int}>
+     * @var array<string, McpAudit>
      */
     private array $audit = [];
 
@@ -25,6 +30,7 @@ final class McpManagementService
         private readonly McpServerManager $manager,
         private readonly OAuthHandler $oauthHandler,
         private readonly ?ServerLoadingModeStore $loadingStore = null,
+        private readonly ?McpServerPolicy $policy = null,
     ) {}
 
     /**
@@ -52,7 +58,7 @@ final class McpManagementService
     {
         $this->config->load();
 
-        return array_values(array_keys($this->config->listServers()));
+        return array_keys($this->config->listServers());
     }
 
     /**
@@ -64,7 +70,7 @@ final class McpManagementService
     }
 
     /**
-    * @return array<string, array{name: string, connected: bool, disabled: bool, loadingMode: string, serverName: ?string, serverVersion: ?string, toolCount: int, error: ?string, instructions: ?string, command: ?string, args: list<string>, env: array<string, string>, audit: array{last_connected_at: ?string, last_connection_error: ?string, last_connection_duration_ms: ?int, last_disconnected_at: ?string, last_tested_at: ?string, last_test_succeeded: ?bool, last_test_error: ?string, last_test_duration_ms: ?int, last_tool_discovery_count: ?int}}>
+        * @return McpServerList
      */
     public function listServers(): array
     {
@@ -79,7 +85,7 @@ final class McpManagementService
     }
 
     /**
-    * @return array{name: string, connected: bool, disabled: bool, loadingMode: string, serverName: ?string, serverVersion: ?string, toolCount: int, error: ?string, instructions: ?string, command: ?string, args: list<string>, env: array<string, string>, audit: array{last_connected_at: ?string, last_connection_error: ?string, last_connection_duration_ms: ?int, last_disconnected_at: ?string, last_tested_at: ?string, last_test_succeeded: ?bool, last_test_error: ?string, last_test_duration_ms: ?int, last_tool_discovery_count: ?int}}
+        * @return McpServerSnapshot
      */
     public function getServerSnapshot(string $name): array
     {
@@ -110,12 +116,14 @@ final class McpManagementService
     }
 
     /**
+     * @param list<string> $args
      * @return array{name: string, command: string, args: list<string>, applied: string}
      */
     public function addServer(string $name, string $command, array $args = []): array
     {
         $name = trim($name);
         $command = trim($command);
+        $args = $this->coerceStringList($args);
 
         if ($name === '') {
             throw new \InvalidArgumentException('Server name is required.');
@@ -125,6 +133,8 @@ final class McpManagementService
             throw new \InvalidArgumentException('Command is required.');
         }
 
+        $this->validateStdioDefinition($command, $args);
+
         $this->config->load();
 
         if ($this->config->getServer($name) !== null) {
@@ -133,14 +143,14 @@ final class McpManagementService
 
         $this->config->addServer($name, [
             'command' => $command,
-            'args' => array_values($args),
+            'args' => $args,
         ]);
         $this->config->save();
 
         return [
             'name' => $name,
             'command' => $command,
-            'args' => array_values($args),
+            'args' => $args,
             'applied' => 'next_turn',
         ];
     }
@@ -165,8 +175,12 @@ final class McpManagementService
         }
 
         if ($args !== null) {
-            $nextConfig['args'] = array_values($args);
+            $nextConfig['args'] = $args;
         }
+
+        $nextCommand = trim((string) ($nextConfig['command'] ?? ''));
+        $nextArgs = $this->coerceStringList($nextConfig['args'] ?? []);
+        $this->validateStdioDefinition($nextCommand, $nextArgs);
 
         $this->config->addServer($name, $nextConfig);
         $this->config->save();
@@ -177,8 +191,8 @@ final class McpManagementService
 
                 return [
                     'name' => $name,
-                    'command' => (string) ($nextConfig['command'] ?? ''),
-                    'args' => array_values(array_map('strval', is_array($nextConfig['args'] ?? null) ? $nextConfig['args'] : [])),
+                    'command' => $nextCommand,
+                    'args' => $nextArgs,
                     'applied' => 'live',
                 ];
             } catch (\Throwable) {
@@ -188,10 +202,18 @@ final class McpManagementService
 
         return [
             'name' => $name,
-            'command' => (string) ($nextConfig['command'] ?? ''),
-            'args' => array_values(array_map('strval', is_array($nextConfig['args'] ?? null) ? $nextConfig['args'] : [])),
+            'command' => $nextCommand,
+            'args' => $nextArgs,
             'applied' => 'next_turn',
         ];
+    }
+
+    /**
+     * @param list<string> $args
+     */
+    private function validateStdioDefinition(string $command, array $args): void
+    {
+        $this->policy?->assertAllowedStdioCommand($command, $args);
     }
 
     /**
@@ -348,7 +370,7 @@ final class McpManagementService
     }
 
     /**
-     * @return array{name: string, duration_ms: int, snapshot: array{name: string, connected: bool, disabled: bool, serverName: ?string, serverVersion: ?string, toolCount: int, error: ?string, instructions: ?string, command: ?string, args: list<string>, env: array<string, string>, audit: array{last_connected_at: ?string, last_connection_error: ?string, last_connection_duration_ms: ?int, last_disconnected_at: ?string, last_tested_at: ?string, last_test_succeeded: ?bool, last_test_error: ?string, last_test_duration_ms: ?int, last_tool_discovery_count: ?int}}}
+    * @return array{name: string, duration_ms: int, snapshot: McpServerSnapshot}
      */
     public function connectServer(string $name): array
     {
@@ -388,7 +410,7 @@ final class McpManagementService
     }
 
     /**
-     * @return array{name: string, duration_ms: int, snapshot: array{name: string, connected: bool, disabled: bool, serverName: ?string, serverVersion: ?string, toolCount: int, error: ?string, instructions: ?string, command: ?string, args: list<string>, env: array<string, string>, audit: array{last_connected_at: ?string, last_connection_error: ?string, last_connection_duration_ms: ?int, last_disconnected_at: ?string, last_tested_at: ?string, last_test_succeeded: ?bool, last_test_error: ?string, last_test_duration_ms: ?int, last_tool_discovery_count: ?int}}}
+    * @return array{name: string, duration_ms: int, snapshot: McpServerSnapshot}
      */
     public function refreshServer(string $name): array
     {
@@ -413,7 +435,7 @@ final class McpManagementService
     }
 
     /**
-     * @return array{name: string, ok: bool, duration_ms: int, snapshot: array{name: string, connected: bool, disabled: bool, serverName: ?string, serverVersion: ?string, toolCount: int, error: ?string, instructions: ?string, command: ?string, args: list<string>, env: array<string, string>, audit: array{last_connected_at: ?string, last_connection_error: ?string, last_connection_duration_ms: ?int, last_disconnected_at: ?string, last_tested_at: ?string, last_test_succeeded: ?bool, last_test_error: ?string, last_test_duration_ms: ?int, last_tool_discovery_count: ?int}}}
+    * @return array{name: string, ok: bool, duration_ms: int, snapshot: McpServerSnapshot}
      */
     public function testServer(string $name): array
     {
@@ -504,7 +526,8 @@ final class McpManagementService
     }
 
     /**
-     * @return array{server: string, env_key: string, expires_at: ?int, applied: string}
+    * @param list<string> $scopes
+    * @return array{server: string, env_key: string, expires_at: ?int, applied: string}
      */
     public function authorizeServer(string $server, string $authUrl, string $tokenUrl, string $clientId = '', array $scopes = []): array
     {
@@ -524,7 +547,7 @@ final class McpManagementService
         }
 
         if ($scopes !== []) {
-            $authConfig['scopes'] = array_values($scopes);
+            $authConfig['scopes'] = $scopes;
         }
 
         $tokens = $this->oauthHandler->authorize($server, $authConfig);
@@ -556,6 +579,24 @@ final class McpManagementService
         }
 
         return $this->loadingStore;
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function coerceStringList(mixed $value): array
+    {
+        if (!is_array($value)) {
+            return [];
+        }
+
+        $result = [];
+
+        foreach ($value as $item) {
+            $result[] = (string) $item;
+        }
+
+        return $result;
     }
 
     private function assertServerExists(string $name): void

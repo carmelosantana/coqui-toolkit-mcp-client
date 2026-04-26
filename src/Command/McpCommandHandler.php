@@ -223,7 +223,7 @@ final class McpCommandHandler implements ToolkitCommandHandler, ToolkitCommandHe
     {
         $server = $this->requireToken($tokens, 1, 'Server name is required.');
         $command = $this->requireToken($tokens, 2, 'Command is required.');
-        $args = array_values(array_slice($tokens, 3));
+        $args = array_slice($tokens, 3);
         $result = $this->service->addServer($server, $command, $args);
         $context->io->success(sprintf('MCP server "%s" added. Available to new turns immediately.', $result['name']));
     }
@@ -235,7 +235,7 @@ final class McpCommandHandler implements ToolkitCommandHandler, ToolkitCommandHe
     {
         $server = $this->requireToken($tokens, 1, 'Server name is required.');
         $command = $tokens[2] ?? null;
-        $args = count($tokens) > 3 ? array_values(array_slice($tokens, 3)) : null;
+        $args = count($tokens) > 3 ? array_slice($tokens, 3) : null;
         $result = $this->service->updateServer($server, $command, $args);
         $context->io->success(sprintf('MCP server "%s" updated (%s).', $result['name'], $result['applied']));
     }
@@ -325,7 +325,7 @@ final class McpCommandHandler implements ToolkitCommandHandler, ToolkitCommandHe
         $authUrl = $this->requireToken($tokens, 2, 'Auth URL is required.');
         $tokenUrl = $this->requireToken($tokens, 3, 'Token URL is required.');
         $clientId = $tokens[4] ?? '';
-        $scopes = count($tokens) > 5 ? array_values(array_slice($tokens, 5)) : [];
+        $scopes = count($tokens) > 5 ? array_slice($tokens, 5) : [];
         $result = $this->service->authorizeServer($server, $authUrl, $tokenUrl, $clientId, $scopes);
 
         $suffix = $result['expires_at'] !== null
