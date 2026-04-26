@@ -96,6 +96,23 @@ namespace CoquiBot\Coqui\Contract {
         }
     }
 
+    if (!interface_exists(CompositeToolkitProvider::class)) {
+        interface CompositeToolkitProvider
+        {
+            /**
+             * @return list<\CarmeloSantana\PHPAgents\Contract\ToolkitInterface>
+             */
+            public function childToolkits(): array;
+        }
+    }
+
+    if (!interface_exists(ToolkitLoadingKeyProvider::class)) {
+        interface ToolkitLoadingKeyProvider
+        {
+            public function toolkitLoadingKey(): string;
+        }
+    }
+
     if (!class_exists(ToolkitReplContext::class)) {
         final readonly class ToolkitReplContext
         {

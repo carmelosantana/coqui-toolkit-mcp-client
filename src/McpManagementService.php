@@ -8,6 +8,7 @@ use CarmeloSantana\PHPAgents\Contract\ToolInterface;
 use CoquiBot\Toolkits\Mcp\Auth\OAuthHandler;
 use CoquiBot\Toolkits\Mcp\Config\McpConfig;
 use CoquiBot\Toolkits\Mcp\Support\ArgumentTokenizer;
+use CoquiBot\Toolkits\Mcp\Support\ServerLoadingModeStore;
 
 /**
  * Shared MCP server management service used by tool, REPL, and API adapters.
@@ -23,6 +24,7 @@ final class McpManagementService
         private readonly McpConfig $config,
         private readonly McpServerManager $manager,
         private readonly OAuthHandler $oauthHandler,
+        private readonly ?ServerLoadingModeStore $loadingStore = null,
     ) {}
 
     /**
@@ -31,6 +33,16 @@ final class McpManagementService
     public function tools(): array
     {
         return $this->manager->getTools();
+    }
+
+    /**
+     * @return list<ToolInterface>
+     */
+    public function toolObjectsForServer(string $name): array
+    {
+        $this->assertServerExists($name);
+
+        return $this->manager->getToolsForServer($name);
     }
 
     /**
@@ -52,7 +64,7 @@ final class McpManagementService
     }
 
     /**
-     * @return array<string, array{name: string, connected: bool, disabled: bool, serverName: ?string, serverVersion: ?string, toolCount: int, error: ?string, instructions: ?string, command: ?string, args: list<string>, env: array<string, string>, audit: array{last_connected_at: ?string, last_connection_error: ?string, last_connection_duration_ms: ?int, last_disconnected_at: ?string, last_tested_at: ?string, last_test_succeeded: ?bool, last_test_error: ?string, last_test_duration_ms: ?int, last_tool_discovery_count: ?int}}>
+    * @return array<string, array{name: string, connected: bool, disabled: bool, loadingMode: string, serverName: ?string, serverVersion: ?string, toolCount: int, error: ?string, instructions: ?string, command: ?string, args: list<string>, env: array<string, string>, audit: array{last_connected_at: ?string, last_connection_error: ?string, last_connection_duration_ms: ?int, last_disconnected_at: ?string, last_tested_at: ?string, last_test_succeeded: ?bool, last_test_error: ?string, last_test_duration_ms: ?int, last_tool_discovery_count: ?int}}>
      */
     public function listServers(): array
     {
@@ -67,7 +79,7 @@ final class McpManagementService
     }
 
     /**
-     * @return array{name: string, connected: bool, disabled: bool, serverName: ?string, serverVersion: ?string, toolCount: int, error: ?string, instructions: ?string, command: ?string, args: list<string>, env: array<string, string>, audit: array{last_connected_at: ?string, last_connection_error: ?string, last_connection_duration_ms: ?int, last_disconnected_at: ?string, last_tested_at: ?string, last_test_succeeded: ?bool, last_test_error: ?string, last_test_duration_ms: ?int, last_tool_discovery_count: ?int}}
+    * @return array{name: string, connected: bool, disabled: bool, loadingMode: string, serverName: ?string, serverVersion: ?string, toolCount: int, error: ?string, instructions: ?string, command: ?string, args: list<string>, env: array<string, string>, audit: array{last_connected_at: ?string, last_connection_error: ?string, last_connection_duration_ms: ?int, last_disconnected_at: ?string, last_tested_at: ?string, last_test_succeeded: ?bool, last_test_error: ?string, last_test_duration_ms: ?int, last_tool_discovery_count: ?int}}
      */
     public function getServerSnapshot(string $name): array
     {
@@ -84,6 +96,7 @@ final class McpManagementService
             'name' => $name,
             'connected' => $status['connected'],
             'disabled' => $this->config->isDisabled($name),
+            'loadingMode' => $this->loadingStore?->getMode($name) ?? 'auto',
             'serverName' => $status['serverName'],
             'serverVersion' => $status['serverVersion'],
             'toolCount' => $status['toolCount'],
@@ -290,6 +303,51 @@ final class McpManagementService
     }
 
     /**
+     * @return array{name: string, loading_mode: string, applied: string}
+     */
+    public function promoteServer(string $name): array
+    {
+        $this->assertServerExists($name);
+        $this->requireLoadingStore()->promote($name);
+
+        return [
+            'name' => $name,
+            'loading_mode' => 'eager',
+            'applied' => 'next_turn',
+        ];
+    }
+
+    /**
+     * @return array{name: string, loading_mode: string, applied: string}
+     */
+    public function demoteServer(string $name): array
+    {
+        $this->assertServerExists($name);
+        $this->requireLoadingStore()->demote($name);
+
+        return [
+            'name' => $name,
+            'loading_mode' => 'deferred',
+            'applied' => 'next_turn',
+        ];
+    }
+
+    /**
+     * @return array{name: string, loading_mode: string, applied: string}
+     */
+    public function autoServer(string $name): array
+    {
+        $this->assertServerExists($name);
+        $this->requireLoadingStore()->auto($name);
+
+        return [
+            'name' => $name,
+            'loading_mode' => 'auto',
+            'applied' => 'next_turn',
+        ];
+    }
+
+    /**
      * @return array{name: string, duration_ms: int, snapshot: array{name: string, connected: bool, disabled: bool, serverName: ?string, serverVersion: ?string, toolCount: int, error: ?string, instructions: ?string, command: ?string, args: list<string>, env: array<string, string>, audit: array{last_connected_at: ?string, last_connection_error: ?string, last_connection_duration_ms: ?int, last_disconnected_at: ?string, last_tested_at: ?string, last_test_succeeded: ?bool, last_test_error: ?string, last_test_duration_ms: ?int, last_tool_discovery_count: ?int}}}
      */
     public function connectServer(string $name): array
@@ -489,6 +547,15 @@ final class McpManagementService
     public function parseArgs(string $raw): array
     {
         return ArgumentTokenizer::split($raw);
+    }
+
+    private function requireLoadingStore(): ServerLoadingModeStore
+    {
+        if ($this->loadingStore === null) {
+            throw new \RuntimeException('MCP loading-mode controls are unavailable in this runtime.');
+        }
+
+        return $this->loadingStore;
     }
 
     private function assertServerExists(string $name): void

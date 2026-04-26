@@ -174,6 +174,30 @@ final class McpServerManager
     }
 
     /**
+     * Get discovered tools for one connected MCP server as Tool objects.
+     *
+     * @return Tool[]
+     */
+    public function getToolsForServer(string $serverName): array
+    {
+        $tools = [];
+
+        foreach ($this->serverTools[$serverName] ?? [] as $toolDef) {
+            $namespacedName = $this->namespaceTool($serverName, $toolDef['name']);
+            $parameters = $this->schemaConverter->convert($toolDef['inputSchema']);
+
+            $tools[] = new Tool(
+                name: $namespacedName,
+                description: $this->buildToolDescription($serverName, $toolDef),
+                parameters: $parameters,
+                callback: $this->buildToolCallback($serverName, $toolDef['name']),
+            );
+        }
+
+        return $tools;
+    }
+
+    /**
      * Call a namespaced tool (mcp_{server}_{tool}).
      *
      * @param string               $namespacedName Full namespaced tool name

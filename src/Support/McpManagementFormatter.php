@@ -10,7 +10,7 @@ namespace CoquiBot\Toolkits\Mcp\Support;
 final class McpManagementFormatter
 {
     /**
-     * @param array<string, array{name: string, connected: bool, disabled: bool, serverName: ?string, serverVersion: ?string, toolCount: int, error: ?string, instructions: ?string, command: ?string, args: list<string>, env: array<string, string>, audit: array{last_connected_at: ?string, last_connection_error: ?string, last_connection_duration_ms: ?int, last_disconnected_at: ?string, last_tested_at: ?string, last_test_succeeded: ?bool, last_test_error: ?string, last_test_duration_ms: ?int, last_tool_discovery_count: ?int}}>} $servers
+    * @param array<string, array{name: string, connected: bool, disabled: bool, loadingMode: string, serverName: ?string, serverVersion: ?string, toolCount: int, error: ?string, instructions: ?string, command: ?string, args: list<string>, env: array<string, string>, audit: array{last_connected_at: ?string, last_connection_error: ?string, last_connection_duration_ms: ?int, last_disconnected_at: ?string, last_tested_at: ?string, last_test_succeeded: ?bool, last_test_error: ?string, last_test_duration_ms: ?int, last_tool_discovery_count: ?int}}>} $servers
      */
     public function formatServerList(array $servers): string
     {
@@ -25,6 +25,7 @@ final class McpManagementFormatter
             $label = $server['serverName'] ?? $server['name'];
             $lines[] = sprintf('  %s [%s]', $label, $state);
             $lines[] = sprintf('    Name: %s', $server['name']);
+            $lines[] = sprintf('    Loading: %s', $server['loadingMode']);
             $lines[] = sprintf('    Tools: %d', $server['toolCount']);
 
             if ($server['error'] !== null) {
@@ -44,13 +45,14 @@ final class McpManagementFormatter
     }
 
     /**
-     * @param array{name: string, connected: bool, disabled: bool, serverName: ?string, serverVersion: ?string, toolCount: int, error: ?string, instructions: ?string, command: ?string, args: list<string>, env: array<string, string>, audit: array{last_connected_at: ?string, last_connection_error: ?string, last_connection_duration_ms: ?int, last_disconnected_at: ?string, last_tested_at: ?string, last_test_succeeded: ?bool, last_test_error: ?string, last_test_duration_ms: ?int, last_tool_discovery_count: ?int}} $server
+      * @param array{name: string, connected: bool, disabled: bool, loadingMode: string, serverName: ?string, serverVersion: ?string, toolCount: int, error: ?string, instructions: ?string, command: ?string, args: list<string>, env: array<string, string>, audit: array{last_connected_at: ?string, last_connection_error: ?string, last_connection_duration_ms: ?int, last_disconnected_at: ?string, last_tested_at: ?string, last_test_succeeded: ?bool, last_test_error: ?string, last_test_duration_ms: ?int, last_tool_discovery_count: ?int}} $server
      */
     public function formatServerStatus(array $server): string
     {
         $lines = [sprintf('MCP Server: %s', $server['name']), ''];
         $lines[] = sprintf('  Status: %s', $server['connected'] ? 'CONNECTED' : 'DISCONNECTED');
         $lines[] = sprintf('  Disabled: %s', $server['disabled'] ? 'yes' : 'no');
+          $lines[] = sprintf('  Loading: %s', $server['loadingMode']);
 
         if ($server['serverName'] !== null) {
             $lines[] = sprintf('  Server Name: %s', $server['serverName']);

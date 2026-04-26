@@ -36,6 +36,9 @@ final class McpCommandHandler implements ToolkitCommandHandler, ToolkitCommandHe
         'remove',
         'enable',
         'disable',
+        'promote',
+        'demote',
+        'auto',
         'set-env',
         'auth',
     ];
@@ -87,6 +90,9 @@ final class McpCommandHandler implements ToolkitCommandHandler, ToolkitCommandHe
                 new ToolkitCommandHelpEntry('remove', '/mcp remove <server>', 'Remove a configured MCP server.'),
                 new ToolkitCommandHelpEntry('enable', '/mcp enable <server>', 'Enable a disabled server.'),
                 new ToolkitCommandHelpEntry('disable', '/mcp disable <server>', 'Disable and disconnect a server.'),
+                new ToolkitCommandHelpEntry('promote', '/mcp promote <server>', 'Force one MCP server toolkit to load eagerly on future turns.'),
+                new ToolkitCommandHelpEntry('demote', '/mcp demote <server>', 'Force one MCP server toolkit to stay deferred on future turns.'),
+                new ToolkitCommandHelpEntry('auto', '/mcp auto <server>', 'Return one MCP server toolkit to automatic budget-gated loading.'),
                 new ToolkitCommandHelpEntry('set-env', '/mcp set-env <server> <ENV_KEY>', 'Prompt for a secret value and store it as an env link for the server.'),
                 new ToolkitCommandHelpEntry('auth', '/mcp auth <server> <auth-url> <token-url> [client-id] [scopes...]', 'Run browser-based OAuth and link the resulting access token.'),
             ],
@@ -98,6 +104,7 @@ final class McpCommandHandler implements ToolkitCommandHandler, ToolkitCommandHe
             notes: [
                 'Server add, update, enable, and env-link changes apply to future agent turns without a full Coqui restart.',
                 'Tool discovery remains namespaced as mcp_{server}_{tool} so per-tool visibility can reuse Coqui\'s existing tool controls.',
+                'Use promote, demote, and auto to control whether a specific MCP server toolkit loads eagerly or stays deferred under the toolkit token budget.',
             ],
         );
     }
@@ -122,6 +129,9 @@ final class McpCommandHandler implements ToolkitCommandHandler, ToolkitCommandHe
                 'remove' => $this->handleRemove($context, $tokens),
                 'enable' => $this->handleEnable($context, $tokens),
                 'disable' => $this->handleDisable($context, $tokens),
+                'promote' => $this->handlePromote($context, $tokens),
+                'demote' => $this->handleDemote($context, $tokens),
+                'auto' => $this->handleAuto($context, $tokens),
                 'set-env' => $this->handleSetEnv($context, $tokens),
                 'auth' => $this->handleAuth($context, $tokens),
                 default => $context->io->error(sprintf('Unknown /mcp subcommand: %s. Use /mcp help.', $action)),
@@ -146,7 +156,7 @@ final class McpCommandHandler implements ToolkitCommandHandler, ToolkitCommandHe
             return self::ACTIONS;
         }
 
-        if (in_array($action, ['status', 'tools', 'test', 'connect', 'disconnect', 'refresh', 'update', 'remove', 'enable', 'disable', 'set-env', 'auth', 'search'], true)) {
+        if (in_array($action, ['status', 'tools', 'test', 'connect', 'disconnect', 'refresh', 'update', 'remove', 'enable', 'disable', 'promote', 'demote', 'auto', 'set-env', 'auth', 'search'], true)) {
             return $this->service->configuredServerNames();
         }
 
@@ -258,6 +268,36 @@ final class McpCommandHandler implements ToolkitCommandHandler, ToolkitCommandHe
         $server = $this->requireToken($tokens, 1, 'Server name is required.');
         $this->service->disableServer($server);
         $context->io->success(sprintf('MCP server "%s" disabled.', $server));
+    }
+
+    /**
+     * @param list<string> $tokens
+     */
+    private function handlePromote(ToolkitReplContext $context, array $tokens): void
+    {
+        $server = $this->requireToken($tokens, 1, 'Server name is required.');
+        $result = $this->service->promoteServer($server);
+        $context->io->success(sprintf('MCP server "%s" loading mode set to %s (%s).', $server, $result['loading_mode'], $result['applied']));
+    }
+
+    /**
+     * @param list<string> $tokens
+     */
+    private function handleDemote(ToolkitReplContext $context, array $tokens): void
+    {
+        $server = $this->requireToken($tokens, 1, 'Server name is required.');
+        $result = $this->service->demoteServer($server);
+        $context->io->success(sprintf('MCP server "%s" loading mode set to %s (%s).', $server, $result['loading_mode'], $result['applied']));
+    }
+
+    /**
+     * @param list<string> $tokens
+     */
+    private function handleAuto(ToolkitReplContext $context, array $tokens): void
+    {
+        $server = $this->requireToken($tokens, 1, 'Server name is required.');
+        $result = $this->service->autoServer($server);
+        $context->io->success(sprintf('MCP server "%s" loading mode set to %s (%s).', $server, $result['loading_mode'], $result['applied']));
     }
 
     /**
