@@ -1,0 +1,565 @@
+<?php
+
+declare(strict_types=1);
+
+namespace CoquiBot\Toolkits\Mcp;
+
+use CarmeloSantana\PHPAgents\Contract\ToolInterface;
+use CoquiBot\Toolkits\Mcp\Auth\OAuthHandler;
+use CoquiBot\Toolkits\Mcp\Config\McpConfig;
+use CoquiBot\Toolkits\Mcp\Support\ArgumentTokenizer;
+
+/**
+ * Shared MCP server management service used by tool, REPL, and API adapters.
+ */
+final class McpManagementService
+{
+    /**
+     * @var array<string, array{last_connected_at: ?string, last_connection_error: ?string, last_connection_duration_ms: ?int, last_disconnected_at: ?string, last_tested_at: ?string, last_test_succeeded: ?bool, last_test_error: ?string, last_test_duration_ms: ?int, last_tool_discovery_count: ?int}>
+     */
+    private array $audit = [];
+
+    public function __construct(
+        private readonly McpConfig $config,
+        private readonly McpServerManager $manager,
+        private readonly OAuthHandler $oauthHandler,
+    ) {}
+
+    /**
+     * @return list<ToolInterface>
+     */
+    public function tools(): array
+    {
+        return $this->manager->getTools();
+    }
+
+    /**
+     * @return list<string>
+     */
+    public function configuredServerNames(): array
+    {
+        $this->config->load();
+
+        return array_values(array_keys($this->config->listServers()));
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    public function serverInstructions(): array
+    {
+        return $this->manager->getServerInstructions();
+    }
+
+    /**
+     * @return array<string, array{name: string, connected: bool, disabled: bool, serverName: ?string, serverVersion: ?string, toolCount: int, error: ?string, instructions: ?string, command: ?string, args: list<string>, env: array<string, string>, audit: array{last_connected_at: ?string, last_connection_error: ?string, last_connection_duration_ms: ?int, last_disconnected_at: ?string, last_tested_at: ?string, last_test_succeeded: ?bool, last_test_error: ?string, last_test_duration_ms: ?int, last_tool_discovery_count: ?int}}>
+     */
+    public function listServers(): array
+    {
+        $this->config->load();
+        $servers = [];
+
+        foreach (array_keys($this->config->listServers()) as $name) {
+            $servers[$name] = $this->getServerSnapshot($name);
+        }
+
+        return $servers;
+    }
+
+    /**
+     * @return array{name: string, connected: bool, disabled: bool, serverName: ?string, serverVersion: ?string, toolCount: int, error: ?string, instructions: ?string, command: ?string, args: list<string>, env: array<string, string>, audit: array{last_connected_at: ?string, last_connection_error: ?string, last_connection_duration_ms: ?int, last_disconnected_at: ?string, last_tested_at: ?string, last_test_succeeded: ?bool, last_test_error: ?string, last_test_duration_ms: ?int, last_tool_discovery_count: ?int}}
+     */
+    public function getServerSnapshot(string $name): array
+    {
+        $this->config->load();
+        $config = $this->config->getServer($name);
+
+        if ($config === null) {
+            throw new \RuntimeException(sprintf('Server "%s" not found.', $name));
+        }
+
+        $status = $this->manager->getServerStatus($name);
+
+        return [
+            'name' => $name,
+            'connected' => $status['connected'],
+            'disabled' => $this->config->isDisabled($name),
+            'serverName' => $status['serverName'],
+            'serverVersion' => $status['serverVersion'],
+            'toolCount' => $status['toolCount'],
+            'error' => $status['error'],
+            'instructions' => $status['instructions'],
+            'command' => $this->config->getCommand($name),
+            'args' => $this->config->getArgs($name),
+            'env' => $this->config->getEnv($name),
+            'audit' => $this->auditSnapshot($name),
+        ];
+    }
+
+    /**
+     * @return array{name: string, command: string, args: list<string>, applied: string}
+     */
+    public function addServer(string $name, string $command, array $args = []): array
+    {
+        $name = trim($name);
+        $command = trim($command);
+
+        if ($name === '') {
+            throw new \InvalidArgumentException('Server name is required.');
+        }
+
+        if ($command === '') {
+            throw new \InvalidArgumentException('Command is required.');
+        }
+
+        $this->config->load();
+
+        if ($this->config->getServer($name) !== null) {
+            throw new \RuntimeException(sprintf('Server "%s" already exists.', $name));
+        }
+
+        $this->config->addServer($name, [
+            'command' => $command,
+            'args' => array_values($args),
+        ]);
+        $this->config->save();
+
+        return [
+            'name' => $name,
+            'command' => $command,
+            'args' => array_values($args),
+            'applied' => 'next_turn',
+        ];
+    }
+
+    /**
+     * @param list<string>|null $args
+     * @return array{name: string, command: string, args: list<string>, applied: string}
+     */
+    public function updateServer(string $name, ?string $command = null, ?array $args = null): array
+    {
+        $this->config->load();
+        $existing = $this->config->getServer($name);
+
+        if ($existing === null) {
+            throw new \RuntimeException(sprintf('Server "%s" not found.', $name));
+        }
+
+        $nextConfig = $existing;
+
+        if ($command !== null && trim($command) !== '') {
+            $nextConfig['command'] = trim($command);
+        }
+
+        if ($args !== null) {
+            $nextConfig['args'] = array_values($args);
+        }
+
+        $this->config->addServer($name, $nextConfig);
+        $this->config->save();
+
+        if ($this->manager->getServerStatus($name)['connected']) {
+            try {
+                $this->refreshServer($name);
+
+                return [
+                    'name' => $name,
+                    'command' => (string) ($nextConfig['command'] ?? ''),
+                    'args' => array_values(array_map('strval', is_array($nextConfig['args'] ?? null) ? $nextConfig['args'] : [])),
+                    'applied' => 'live',
+                ];
+            } catch (\Throwable) {
+                // Keep the config update. The caller can surface the runtime reconnect failure separately.
+            }
+        }
+
+        return [
+            'name' => $name,
+            'command' => (string) ($nextConfig['command'] ?? ''),
+            'args' => array_values(array_map('strval', is_array($nextConfig['args'] ?? null) ? $nextConfig['args'] : [])),
+            'applied' => 'next_turn',
+        ];
+    }
+
+    /**
+     * @return array{name: string, applied: string}
+     */
+    public function removeServer(string $name): array
+    {
+        $this->config->load();
+
+        if (!$this->config->removeServer($name)) {
+            throw new \RuntimeException(sprintf('Server "%s" not found.', $name));
+        }
+
+        $this->manager->disconnectServer($name);
+        $this->config->save();
+        unset($this->audit[$name]);
+
+        return [
+            'name' => $name,
+            'applied' => 'live',
+        ];
+    }
+
+    /**
+     * @return array{name: string, key: string, placeholder: string, applied: string}
+     */
+    public function setServerSecret(string $name, string $key, string $value): array
+    {
+        $key = trim($key);
+
+        if ($key === '') {
+            throw new \InvalidArgumentException('Environment variable key is required.');
+        }
+
+        $this->assertServerExists($name);
+        putenv($key . '=' . $value);
+
+        return $this->setServerEnvPlaceholder($name, $key, '${' . $key . '}');
+    }
+
+    /**
+     * @return array{name: string, key: string, placeholder: string, applied: string}
+     */
+    public function setServerEnvPlaceholder(string $name, string $key, string $placeholder): array
+    {
+        $key = trim($key);
+        $placeholder = trim($placeholder);
+
+        if ($key === '') {
+            throw new \InvalidArgumentException('Environment variable key is required.');
+        }
+
+        if ($placeholder === '') {
+            throw new \InvalidArgumentException('Environment placeholder is required.');
+        }
+
+        $this->assertServerExists($name);
+        $this->config->setServerEnv($name, $key, $placeholder);
+        $this->config->save();
+
+        return [
+            'name' => $name,
+            'key' => $key,
+            'placeholder' => $placeholder,
+            'applied' => $this->manager->getServerStatus($name)['connected'] ? 'reconnect_required' : 'next_turn',
+        ];
+    }
+
+    /**
+     * @return array{name: string, disabled: bool, applied: string}
+     */
+    public function enableServer(string $name): array
+    {
+        $this->config->load();
+
+        if (!$this->config->enableServer($name)) {
+            throw new \RuntimeException(sprintf('Server "%s" not found.', $name));
+        }
+
+        $this->config->save();
+
+        return [
+            'name' => $name,
+            'disabled' => false,
+            'applied' => 'live',
+        ];
+    }
+
+    /**
+     * @return array{name: string, disabled: bool, applied: string}
+     */
+    public function disableServer(string $name): array
+    {
+        $this->config->load();
+
+        if (!$this->config->disableServer($name)) {
+            throw new \RuntimeException(sprintf('Server "%s" not found.', $name));
+        }
+
+        $this->manager->disconnectServer($name);
+        $this->recordDisconnect($name);
+        $this->config->save();
+
+        return [
+            'name' => $name,
+            'disabled' => true,
+            'applied' => 'live',
+        ];
+    }
+
+    /**
+     * @return array{name: string, duration_ms: int, snapshot: array{name: string, connected: bool, disabled: bool, serverName: ?string, serverVersion: ?string, toolCount: int, error: ?string, instructions: ?string, command: ?string, args: list<string>, env: array<string, string>, audit: array{last_connected_at: ?string, last_connection_error: ?string, last_connection_duration_ms: ?int, last_disconnected_at: ?string, last_tested_at: ?string, last_test_succeeded: ?bool, last_test_error: ?string, last_test_duration_ms: ?int, last_tool_discovery_count: ?int}}}
+     */
+    public function connectServer(string $name): array
+    {
+        $this->assertServerExists($name);
+        $startedAt = microtime(true);
+
+        try {
+            $this->manager->connectServer($name);
+            $durationMs = (int) round((microtime(true) - $startedAt) * 1000);
+            $snapshot = $this->getServerSnapshot($name);
+            $this->recordConnectionSuccess($name, $durationMs, $snapshot['toolCount']);
+
+            return [
+                'name' => $name,
+                'duration_ms' => $durationMs,
+                'snapshot' => $this->getServerSnapshot($name),
+            ];
+        } catch (\Throwable $e) {
+            $this->recordConnectionFailure($name, (int) round((microtime(true) - $startedAt) * 1000), $e->getMessage());
+            throw $e;
+        }
+    }
+
+    /**
+     * @return array{name: string, applied: string}
+     */
+    public function disconnectServer(string $name): array
+    {
+        $this->assertServerExists($name);
+        $this->manager->disconnectServer($name);
+        $this->recordDisconnect($name);
+
+        return [
+            'name' => $name,
+            'applied' => 'live',
+        ];
+    }
+
+    /**
+     * @return array{name: string, duration_ms: int, snapshot: array{name: string, connected: bool, disabled: bool, serverName: ?string, serverVersion: ?string, toolCount: int, error: ?string, instructions: ?string, command: ?string, args: list<string>, env: array<string, string>, audit: array{last_connected_at: ?string, last_connection_error: ?string, last_connection_duration_ms: ?int, last_disconnected_at: ?string, last_tested_at: ?string, last_test_succeeded: ?bool, last_test_error: ?string, last_test_duration_ms: ?int, last_tool_discovery_count: ?int}}}
+     */
+    public function refreshServer(string $name): array
+    {
+        $this->assertServerExists($name);
+        $startedAt = microtime(true);
+
+        try {
+            $this->manager->refreshServer($name);
+            $durationMs = (int) round((microtime(true) - $startedAt) * 1000);
+            $snapshot = $this->getServerSnapshot($name);
+            $this->recordConnectionSuccess($name, $durationMs, $snapshot['toolCount']);
+
+            return [
+                'name' => $name,
+                'duration_ms' => $durationMs,
+                'snapshot' => $snapshot,
+            ];
+        } catch (\Throwable $e) {
+            $this->recordConnectionFailure($name, (int) round((microtime(true) - $startedAt) * 1000), $e->getMessage());
+            throw $e;
+        }
+    }
+
+    /**
+     * @return array{name: string, ok: bool, duration_ms: int, snapshot: array{name: string, connected: bool, disabled: bool, serverName: ?string, serverVersion: ?string, toolCount: int, error: ?string, instructions: ?string, command: ?string, args: list<string>, env: array<string, string>, audit: array{last_connected_at: ?string, last_connection_error: ?string, last_connection_duration_ms: ?int, last_disconnected_at: ?string, last_tested_at: ?string, last_test_succeeded: ?bool, last_test_error: ?string, last_test_duration_ms: ?int, last_tool_discovery_count: ?int}}}
+     */
+    public function testServer(string $name): array
+    {
+        $this->assertServerExists($name);
+        $startedAt = microtime(true);
+
+        try {
+            $result = $this->refreshServer($name);
+            $durationMs = (int) round((microtime(true) - $startedAt) * 1000);
+            $snapshot = $result['snapshot'];
+            $this->recordTest($name, true, $durationMs, null, $snapshot['toolCount']);
+
+            return [
+                'name' => $name,
+                'ok' => true,
+                'duration_ms' => $durationMs,
+                'snapshot' => $this->getServerSnapshot($name),
+            ];
+        } catch (\Throwable $e) {
+            $durationMs = (int) round((microtime(true) - $startedAt) * 1000);
+            $this->recordTest($name, false, $durationMs, $e->getMessage(), null);
+            throw $e;
+        }
+    }
+
+    /**
+     * @return list<array{name: string, namespacedName: string, description: string, inputSchema: array<string, mixed>}>
+     */
+    public function getServerTools(string $name): array
+    {
+        $this->assertServerExists($name);
+        $tools = [];
+
+        foreach ($this->manager->getServerToolDefs($name) as $tool) {
+            $tools[] = [
+                'name' => $tool['name'],
+                'namespacedName' => $this->namespaceTool($name, $tool['name']),
+                'description' => $tool['description'],
+                'inputSchema' => $tool['inputSchema'],
+            ];
+        }
+
+        return $tools;
+    }
+
+    /**
+     * @return list<array{server: string, name: string, namespacedName: string, description: string}>
+     */
+    public function searchTools(string $query, ?string $server = null): array
+    {
+        $query = strtolower(trim($query));
+
+        if ($query === '') {
+            throw new \InvalidArgumentException('Search query is required.');
+        }
+
+        $servers = $server !== null && $server !== '' ? [$server] : $this->configuredServerNames();
+        $results = [];
+
+        foreach ($servers as $serverName) {
+            foreach ($this->getServerTools($serverName) as $tool) {
+                $haystack = strtolower(implode(' ', [
+                    $serverName,
+                    $tool['name'],
+                    $tool['namespacedName'],
+                    $tool['description'],
+                ]));
+
+                if (!str_contains($haystack, $query)) {
+                    continue;
+                }
+
+                $results[] = [
+                    'server' => $serverName,
+                    'name' => $tool['name'],
+                    'namespacedName' => $tool['namespacedName'],
+                    'description' => $tool['description'],
+                ];
+            }
+        }
+
+        usort(
+            $results,
+            static fn(array $left, array $right): int => strcmp($left['namespacedName'], $right['namespacedName']),
+        );
+
+        return $results;
+    }
+
+    /**
+     * @return array{server: string, env_key: string, expires_at: ?int, applied: string}
+     */
+    public function authorizeServer(string $server, string $authUrl, string $tokenUrl, string $clientId = '', array $scopes = []): array
+    {
+        $this->assertServerExists($server);
+
+        if (trim($authUrl) === '' || trim($tokenUrl) === '') {
+            throw new \InvalidArgumentException('Auth URL and token URL are required.');
+        }
+
+        $authConfig = [
+            'authUrl' => trim($authUrl),
+            'tokenUrl' => trim($tokenUrl),
+        ];
+
+        if (trim($clientId) !== '') {
+            $authConfig['clientId'] = trim($clientId);
+        }
+
+        if ($scopes !== []) {
+            $authConfig['scopes'] = array_values($scopes);
+        }
+
+        $tokens = $this->oauthHandler->authorize($server, $authConfig);
+        $envKey = strtoupper(preg_replace('/[^a-zA-Z0-9_]/', '_', $server) ?? $server) . '_ACCESS_TOKEN';
+        putenv($envKey . '=' . $tokens['access_token']);
+        $this->config->setServerEnv($server, $envKey, '${' . $envKey . '}');
+        $this->config->save();
+
+        return [
+            'server' => $server,
+            'env_key' => $envKey,
+            'expires_at' => isset($tokens['expires_at']) ? (int) $tokens['expires_at'] : null,
+            'applied' => $this->manager->getServerStatus($server)['connected'] ? 'reconnect_required' : 'next_turn',
+        ];
+    }
+
+    /**
+     * @return list<string>
+     */
+    public function parseArgs(string $raw): array
+    {
+        return ArgumentTokenizer::split($raw);
+    }
+
+    private function assertServerExists(string $name): void
+    {
+        $this->config->load();
+
+        if ($this->config->getServer($name) === null) {
+            throw new \RuntimeException(sprintf('Server "%s" not found.', $name));
+        }
+    }
+
+    private function namespaceTool(string $serverName, string $toolName): string
+    {
+        $sanitized = preg_replace('/[^a-z0-9_]/', '_', strtolower($serverName)) ?? $serverName;
+
+        return 'mcp_' . $sanitized . '_' . $toolName;
+    }
+
+    /**
+     * @return array{last_connected_at: ?string, last_connection_error: ?string, last_connection_duration_ms: ?int, last_disconnected_at: ?string, last_tested_at: ?string, last_test_succeeded: ?bool, last_test_error: ?string, last_test_duration_ms: ?int, last_tool_discovery_count: ?int}
+     */
+    private function auditSnapshot(string $server): array
+    {
+        return $this->audit[$server] ?? [
+            'last_connected_at' => null,
+            'last_connection_error' => null,
+            'last_connection_duration_ms' => null,
+            'last_disconnected_at' => null,
+            'last_tested_at' => null,
+            'last_test_succeeded' => null,
+            'last_test_error' => null,
+            'last_test_duration_ms' => null,
+            'last_tool_discovery_count' => null,
+        ];
+    }
+
+    private function recordConnectionSuccess(string $server, int $durationMs, int $toolCount): void
+    {
+        $audit = $this->auditSnapshot($server);
+        $audit['last_connected_at'] = gmdate(DATE_ATOM);
+        $audit['last_connection_error'] = null;
+        $audit['last_connection_duration_ms'] = $durationMs;
+        $audit['last_tool_discovery_count'] = $toolCount;
+        $this->audit[$server] = $audit;
+    }
+
+    private function recordConnectionFailure(string $server, int $durationMs, string $error): void
+    {
+        $audit = $this->auditSnapshot($server);
+        $audit['last_connection_error'] = $error;
+        $audit['last_connection_duration_ms'] = $durationMs;
+        $this->audit[$server] = $audit;
+    }
+
+    private function recordDisconnect(string $server): void
+    {
+        $audit = $this->auditSnapshot($server);
+        $audit['last_disconnected_at'] = gmdate(DATE_ATOM);
+        $this->audit[$server] = $audit;
+    }
+
+    private function recordTest(string $server, bool $succeeded, int $durationMs, ?string $error, ?int $toolCount): void
+    {
+        $audit = $this->auditSnapshot($server);
+        $audit['last_tested_at'] = gmdate(DATE_ATOM);
+        $audit['last_test_succeeded'] = $succeeded;
+        $audit['last_test_error'] = $error;
+        $audit['last_test_duration_ms'] = $durationMs;
+        if ($toolCount !== null) {
+            $audit['last_tool_discovery_count'] = $toolCount;
+        }
+        $this->audit[$server] = $audit;
+    }
+}

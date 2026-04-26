@@ -342,6 +342,8 @@ final class McpServerManager
 
         if ($desc === '') {
             $desc = sprintf('Tool "%s" from MCP server "%s"', $toolDef['name'], $serverName);
+        } else {
+            $desc = sprintf('%s [MCP server: %s]', $desc, $serverName);
         }
 
         return $desc;
