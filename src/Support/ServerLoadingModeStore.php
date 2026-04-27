@@ -55,6 +55,33 @@ final class ServerLoadingModeStore
         $this->save($data);
     }
 
+    public function forget(string $serverName): void
+    {
+        $this->auto($serverName);
+    }
+
+    public function rename(string $currentName, string $nextName): void
+    {
+        if ($currentName === $nextName) {
+            return;
+        }
+
+        $data = $this->load();
+        $currentKey = $this->key($currentName);
+        $nextKey = $this->key($nextName);
+
+        if (!isset($data[$currentKey])) {
+            unset($data[$nextKey]);
+            $this->save($data);
+
+            return;
+        }
+
+        $data[$nextKey] = $data[$currentKey];
+        unset($data[$currentKey]);
+        $this->save($data);
+    }
+
     /**
      * @return array<string, string>
      */

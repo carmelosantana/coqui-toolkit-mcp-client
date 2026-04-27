@@ -40,6 +40,7 @@ final class McpToolkit implements ToolkitInterface, ReplCommandProvider, Composi
     private readonly McpManagementService $service;
     private readonly McpManagementFormatter $formatter;
     private readonly ServerLoadingModeStore $loadingStore;
+    private bool $serversBooted = false;
 
     public function __construct(
         private readonly string $workspacePath,
@@ -51,7 +52,7 @@ final class McpToolkit implements ToolkitInterface, ReplCommandProvider, Composi
         $this->loadingStore = new ServerLoadingModeStore($this->workspacePath);
         $this->service = new McpManagementService($this->config, $this->manager, $this->oauthHandler, $this->loadingStore, $policy);
         $this->formatter = new McpManagementFormatter();
-        $this->boot();
+        $this->config->load();
     }
 
     /**
@@ -95,6 +96,8 @@ final class McpToolkit implements ToolkitInterface, ReplCommandProvider, Composi
      */
     public function childToolkits(): array
     {
+        $this->ensureServersBooted();
+
         $children = [];
 
         foreach ($this->service->listServers() as $server) {
@@ -139,16 +142,21 @@ final class McpToolkit implements ToolkitInterface, ReplCommandProvider, Composi
     }
 
     /**
-     * Connect to all enabled servers at boot.
+     * Connect to enabled servers only when MCP child toolkits are needed.
+     * This keeps REPL command registration cheap before the first prompt.
      */
-    private function boot(): void
+    private function ensureServersBooted(): void
     {
-        $this->config->load();
-        $enabledServers = $this->config->listEnabledServers();
+        if ($this->serversBooted) {
+            return;
+        }
 
+        $enabledServers = $this->config->listEnabledServers();
         if ($enabledServers !== []) {
             $this->manager->connectAll();
         }
+
+        $this->serversBooted = true;
     }
 
     private static function resolveWorkspacePath(mixed $workspace): string

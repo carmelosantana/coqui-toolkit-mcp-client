@@ -18,10 +18,10 @@ When installed alongside Coqui, the toolkit is **auto-discovered** via Composer'
 
 ## How It Works
 
-1. MCP servers are configured in `.workspace/mcp.json` using Claude Desktop-style stdio definitions.
+1. MCP servers are configured in `.workspace/mcp.json` using Claude Desktop-style stdio definitions plus optional operator metadata such as `description`.
 2. The root toolkit exposes one management tool, `mcp`, plus the `/mcp` REPL command.
 3. Connected servers expose their discovered tools through server-scoped child toolkits, with namespaced tool names like `mcp_github_create_issue`.
-4. Server add, update, enable, disable, env-link, and connectivity changes hot-apply where possible and otherwise affect the next agent turn without requiring a full Coqui restart.
+4. Server add, rename, update, enable, disable, env-link, and connectivity changes hot-apply where possible and otherwise affect the next agent turn without requiring a full Coqui restart.
 5. Per-server loading mode can be set to eager, deferred, or auto so MCP tool loading participates in Coqui's existing toolkit deferment model.
 
 ## Major Capabilities
@@ -69,6 +69,7 @@ MCP servers are stored in `.workspace/mcp.json`:
 {
     "mcpServers": {
         "github": {
+            "description": "Primary GitHub tools",
             "command": "npx",
             "args": ["-y", "@modelcontextprotocol/server-github"],
             "env": {

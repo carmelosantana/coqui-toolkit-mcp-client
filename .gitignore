@@ -1,7 +1,8 @@
 vendor/
 .env
+.DS_Store
 *.cache
+.phpstan-cache/
 .phpunit.cache/
 .phpunit.result.cache
 composer.lock
-.phpstan-cache/

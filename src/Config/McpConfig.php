@@ -124,6 +124,36 @@ final class McpConfig
     }
 
     /**
+     * Rename a configured server while preserving insertion order.
+     */
+    public function renameServer(string $currentName, string $nextName): bool
+    {
+        $this->ensureLoaded();
+
+        if (!isset($this->servers[$currentName])) {
+            return false;
+        }
+
+        if ($currentName === $nextName) {
+            return true;
+        }
+
+        if (isset($this->servers[$nextName])) {
+            return false;
+        }
+
+        $renamed = [];
+
+        foreach ($this->servers as $serverName => $config) {
+            $renamed[$serverName === $currentName ? $nextName : $serverName] = $config;
+        }
+
+        $this->servers = $renamed;
+
+        return true;
+    }
+
+    /**
      * Remove a server configuration.
      */
     public function removeServer(string $name): bool
@@ -239,6 +269,17 @@ final class McpConfig
         $config = $this->getServer($name);
 
         return isset($config['command']) ? (string) $config['command'] : null;
+    }
+
+    /**
+     * Get the optional operator-facing description for a server.
+     */
+    public function getDescription(string $name): ?string
+    {
+        $config = $this->getServer($name);
+        $description = isset($config['description']) ? trim((string) $config['description']) : '';
+
+        return $description !== '' ? $description : null;
     }
 
     /**

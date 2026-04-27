@@ -28,6 +28,9 @@ final class McpManagementFormatter
             $label = $server['serverName'] ?? $server['name'];
             $lines[] = sprintf('  %s [%s]', $label, $state);
             $lines[] = sprintf('    Name: %s', $server['name']);
+            if ($server['description'] !== null) {
+                $lines[] = sprintf('    Description: %s', $server['description']);
+            }
             $lines[] = sprintf('    Loading: %s', $server['loadingMode']);
             $lines[] = sprintf('    Tools: %d', $server['toolCount']);
 
@@ -55,7 +58,10 @@ final class McpManagementFormatter
         $lines = [sprintf('MCP Server: %s', $server['name']), ''];
         $lines[] = sprintf('  Status: %s', $server['connected'] ? 'CONNECTED' : 'DISCONNECTED');
         $lines[] = sprintf('  Disabled: %s', $server['disabled'] ? 'yes' : 'no');
-                $lines[] = sprintf('  Loading: %s', $server['loadingMode']);
+        if ($server['description'] !== null) {
+            $lines[] = sprintf('  Description: %s', $server['description']);
+        }
+        $lines[] = sprintf('  Loading: %s', $server['loadingMode']);
 
         if ($server['serverName'] !== null) {
             $lines[] = sprintf('  Server Name: %s', $server['serverName']);

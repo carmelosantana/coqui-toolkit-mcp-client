@@ -98,7 +98,13 @@ test('save writes valid JSON to disk', function () {
     $config->addServer('test', ['command' => 'echo', 'args' => ['hello']]);
     $config->save();
 
-    $written = json_decode(file_get_contents($path . '/mcp.json'), true);
+    $writtenJson = file_get_contents($path . '/mcp.json');
+
+    if ($writtenJson === false) {
+        throw new RuntimeException('Expected mcp.json to be readable after save().');
+    }
+
+    $written = json_decode($writtenJson, true);
 
     expect($written['mcpServers']['test']['command'])->toBe('echo')
         ->and($written['mcpServers']['test']['args'])->toBe(['hello']);
@@ -119,6 +125,29 @@ test('addServer and getServer', function () {
 
     expect($config->getServer('demo'))->toBe(['command' => 'node', 'args' => ['server.js']])
         ->and($config->getServer('nonexistent'))->toBeNull();
+
+    rmdir($path);
+});
+
+test('renameServer moves config entry and preserves payload', function () {
+    $path = sys_get_temp_dir() . '/mcp-test-' . uniqid();
+    mkdir($path, 0o755, true);
+
+    $config = new McpConfig($path);
+    $config->load();
+    $config->addServer('demo', [
+        'command' => 'node',
+        'args' => ['server.js'],
+        'description' => 'Demo server',
+    ]);
+
+    expect($config->renameServer('demo', 'renamed'))->toBeTrue()
+        ->and($config->getServer('demo'))->toBeNull()
+        ->and($config->getServer('renamed'))->toMatchArray([
+            'command' => 'node',
+            'args' => ['server.js'],
+            'description' => 'Demo server',
+        ]);
 
     rmdir($path);
 });
@@ -244,7 +273,24 @@ test('getCommand and getArgs with missing server', function () {
 
     expect($config->getCommand('nope'))->toBeNull()
         ->and($config->getArgs('nope'))->toBe([])
+        ->and($config->getDescription('nope'))->toBeNull()
         ->and($config->getEnv('nope'))->toBe([]);
+
+    rmdir($path);
+});
+
+test('getDescription returns trimmed optional description', function () {
+    $path = sys_get_temp_dir() . '/mcp-test-' . uniqid();
+    mkdir($path, 0o755, true);
+
+    $config = new McpConfig($path);
+    $config->load();
+    $config->addServer('demo', [
+        'command' => 'echo',
+        'description' => '  Demo server  ',
+    ]);
+
+    expect($config->getDescription('demo'))->toBe('Demo server');
 
     rmdir($path);
 });

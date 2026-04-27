@@ -15,7 +15,7 @@ use CoquiBot\Toolkits\Mcp\Support\ServerLoadingModeStore;
  * Shared MCP server management service used by tool, REPL, and API adapters.
  *
  * @phpstan-type McpAudit array{last_connected_at: ?string, last_connection_error: ?string, last_connection_duration_ms: ?int, last_disconnected_at: ?string, last_tested_at: ?string, last_test_succeeded: ?bool, last_test_error: ?string, last_test_duration_ms: ?int, last_tool_discovery_count: ?int}
- * @phpstan-type McpServerSnapshot array{name: string, connected: bool, disabled: bool, loadingMode: string, serverName: ?string, serverVersion: ?string, toolCount: int, error: ?string, instructions: ?string, command: ?string, args: list<string>, env: array<string, string>, audit: McpAudit}
+ * @phpstan-type McpServerSnapshot array{name: string, description: ?string, connected: bool, disabled: bool, loadingMode: string, serverName: ?string, serverVersion: ?string, toolCount: int, error: ?string, instructions: ?string, command: ?string, args: list<string>, env: array<string, string>, audit: McpAudit}
  * @phpstan-type McpServerList array<string, McpServerSnapshot>
  */
 final class McpManagementService
@@ -100,6 +100,7 @@ final class McpManagementService
 
         return [
             'name' => $name,
+            'description' => $this->config->getDescription($name),
             'connected' => $status['connected'],
             'disabled' => $this->config->isDisabled($name),
             'loadingMode' => $this->loadingStore?->getMode($name) ?? 'auto',
@@ -119,11 +120,12 @@ final class McpManagementService
      * @param list<string> $args
      * @return array{name: string, command: string, args: list<string>, applied: string}
      */
-    public function addServer(string $name, string $command, array $args = []): array
+    public function addServer(string $name, string $command, array $args = [], ?string $description = null): array
     {
         $name = trim($name);
         $command = trim($command);
         $args = $this->coerceStringList($args);
+        $description = $description !== null ? trim($description) : null;
 
         if ($name === '') {
             throw new \InvalidArgumentException('Server name is required.');
@@ -141,10 +143,16 @@ final class McpManagementService
             throw new \RuntimeException(sprintf('Server "%s" already exists.', $name));
         }
 
-        $this->config->addServer($name, [
+        $serverConfig = [
             'command' => $command,
             'args' => $args,
-        ]);
+        ];
+
+        if ($description !== null && $description !== '') {
+            $serverConfig['description'] = $description;
+        }
+
+        $this->config->addServer($name, $serverConfig);
         $this->config->save();
 
         return [
@@ -159,7 +167,14 @@ final class McpManagementService
      * @param list<string>|null $args
      * @return array{name: string, command: string, args: list<string>, applied: string}
      */
-    public function updateServer(string $name, ?string $command = null, ?array $args = null): array
+    public function updateServer(
+        string $name,
+        ?string $command = null,
+        ?array $args = null,
+        ?string $newName = null,
+        bool $descriptionProvided = false,
+        ?string $description = null,
+    ): array
     {
         $this->config->load();
         $existing = $this->config->getServer($name);
@@ -169,6 +184,15 @@ final class McpManagementService
         }
 
         $nextConfig = $existing;
+        $targetName = trim($newName ?? $name);
+
+        if ($targetName === '') {
+            throw new \InvalidArgumentException('Server name is required.');
+        }
+
+        if ($targetName !== $name && $this->config->getServer($targetName) !== null) {
+            throw new \DomainException(sprintf('Server "%s" already exists.', $targetName));
+        }
 
         if ($command !== null && trim($command) !== '') {
             $nextConfig['command'] = trim($command);
@@ -178,19 +202,49 @@ final class McpManagementService
             $nextConfig['args'] = $args;
         }
 
+        if ($descriptionProvided) {
+            $nextDescription = trim($description ?? '');
+
+            if ($nextDescription === '') {
+                unset($nextConfig['description']);
+            } else {
+                $nextConfig['description'] = $nextDescription;
+            }
+        }
+
         $nextCommand = trim((string) ($nextConfig['command'] ?? ''));
         $nextArgs = $this->coerceStringList($nextConfig['args'] ?? []);
         $this->validateStdioDefinition($nextCommand, $nextArgs);
 
-        $this->config->addServer($name, $nextConfig);
+        $wasConnected = $this->manager->getServerStatus($name)['connected'];
+        $renamed = $targetName !== $name;
+
+        if ($renamed) {
+            if ($wasConnected) {
+                $this->manager->disconnectServer($name);
+            }
+
+            if (!$this->config->renameServer($name, $targetName)) {
+                throw new \RuntimeException(sprintf('Server "%s" not found.', $name));
+            }
+
+            $this->migrateAudit($name, $targetName);
+            $this->loadingStore?->rename($name, $targetName);
+        }
+
+        $this->config->addServer($targetName, $nextConfig);
         $this->config->save();
 
-        if ($this->manager->getServerStatus($name)['connected']) {
+        if ($wasConnected) {
             try {
-                $this->refreshServer($name);
+                if ($renamed) {
+                    $this->reconnectUpdatedServer($targetName);
+                } else {
+                    $this->refreshServer($targetName);
+                }
 
                 return [
-                    'name' => $name,
+                    'name' => $targetName,
                     'command' => $nextCommand,
                     'args' => $nextArgs,
                     'applied' => 'live',
@@ -201,7 +255,7 @@ final class McpManagementService
         }
 
         return [
-            'name' => $name,
+            'name' => $targetName,
             'command' => $nextCommand,
             'args' => $nextArgs,
             'applied' => 'next_turn',
@@ -228,6 +282,7 @@ final class McpManagementService
         }
 
         $this->manager->disconnectServer($name);
+    $this->loadingStore?->forget($name);
         $this->config->save();
         unset($this->audit[$name]);
 
@@ -613,6 +668,31 @@ final class McpManagementService
         $sanitized = preg_replace('/[^a-z0-9_]/', '_', strtolower($serverName)) ?? $serverName;
 
         return 'mcp_' . $sanitized . '_' . $toolName;
+    }
+
+    private function reconnectUpdatedServer(string $name): void
+    {
+        $startedAt = microtime(true);
+
+        try {
+            $this->manager->connectServer($name);
+            $durationMs = (int) round((microtime(true) - $startedAt) * 1000);
+            $snapshot = $this->getServerSnapshot($name);
+            $this->recordConnectionSuccess($name, $durationMs, $snapshot['toolCount']);
+        } catch (\Throwable $e) {
+            $this->recordConnectionFailure($name, (int) round((microtime(true) - $startedAt) * 1000), $e->getMessage());
+            throw $e;
+        }
+    }
+
+    private function migrateAudit(string $currentName, string $nextName): void
+    {
+        if ($currentName === $nextName || !isset($this->audit[$currentName])) {
+            return;
+        }
+
+        $this->audit[$nextName] = $this->audit[$currentName];
+        unset($this->audit[$currentName]);
     }
 
     /**
