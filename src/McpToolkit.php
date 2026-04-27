@@ -10,8 +10,15 @@ use CarmeloSantana\PHPAgents\Tool\Tool;
 use CarmeloSantana\PHPAgents\Tool\ToolResult;
 use CarmeloSantana\PHPAgents\Tool\Parameter\EnumParameter;
 use CarmeloSantana\PHPAgents\Tool\Parameter\StringParameter;
+use CoquiBot\Coqui\Contract\CompositeToolkitProvider;
+use CoquiBot\Coqui\Contract\ReplCommandProvider;
+use CoquiBot\Coqui\Contract\ToolkitCommandHandler;
+use CoquiBot\Toolkits\Mcp\Command\McpCommandHandler;
 use CoquiBot\Toolkits\Mcp\Auth\OAuthHandler;
 use CoquiBot\Toolkits\Mcp\Config\McpConfig;
+use CoquiBot\Toolkits\Mcp\Support\McpManagementFormatter;
+use CoquiBot\Toolkits\Mcp\Support\McpServerPolicy;
+use CoquiBot\Toolkits\Mcp\Support\ServerLoadingModeStore;
 
 /**
  * MCP (Model Context Protocol) toolkit for Coqui.
@@ -25,19 +32,46 @@ use CoquiBot\Toolkits\Mcp\Config\McpConfig;
  *
  * Auto-discovered by Coqui's ToolkitDiscovery when installed via Composer.
  */
-final class McpToolkit implements ToolkitInterface
+final class McpToolkit implements ToolkitInterface, ReplCommandProvider, CompositeToolkitProvider
 {
     private readonly McpConfig $config;
     private readonly McpServerManager $manager;
     private readonly OAuthHandler $oauthHandler;
+    private readonly McpManagementService $service;
+    private readonly McpManagementFormatter $formatter;
+    private readonly ServerLoadingModeStore $loadingStore;
+    private bool $serversBooted = false;
 
     public function __construct(
         private readonly string $workspacePath,
+        ?McpServerPolicy $policy = null,
     ) {
         $this->config = new McpConfig($this->workspacePath);
         $this->manager = new McpServerManager($this->config);
         $this->oauthHandler = new OAuthHandler($this->workspacePath);
-        $this->boot();
+        $this->loadingStore = new ServerLoadingModeStore($this->workspacePath);
+        $this->service = new McpManagementService($this->config, $this->manager, $this->oauthHandler, $this->loadingStore, $policy);
+        $this->formatter = new McpManagementFormatter();
+        $this->config->load();
+    }
+
+    /**
+     * @param array<string, mixed> $context
+     */
+    public static function fromCoquiContext(array $context): self
+    {
+        $workspace = self::resolveWorkspacePath($context['workspacePath'] ?? null);
+        $config = $context['config'] ?? null;
+        $policy = null;
+
+        if (is_object($config) && method_exists($config, 'get')) {
+            $policy = McpServerPolicy::fromConfigValues(
+                $config->get('agents.defaults.mcp.allowedStdioCommands'),
+                $config->get('agents.defaults.mcp.deniedStdioCommands'),
+            );
+        }
+
+        return new self($workspace, $policy);
     }
 
     /**
@@ -45,15 +79,7 @@ final class McpToolkit implements ToolkitInterface
      */
     public static function fromEnv(): self
     {
-        $workspace = getenv('COQUI_WORKSPACE');
-
-        if ($workspace === false || $workspace === '') {
-            // Fallback: CWD + .workspace
-            $cwd = getcwd() ?: '.';
-            $workspace = $cwd . '/.workspace';
-        }
-
-        return new self($workspace);
+        return new self(self::resolveWorkspacePath(getenv('COQUI_WORKSPACE')));
     }
 
     /**
@@ -62,79 +88,86 @@ final class McpToolkit implements ToolkitInterface
     #[\Override]
     public function tools(): array
     {
-        return [
-            $this->mcpManagementTool(),
-            ...$this->manager->getTools(),
-        ];
+        return [$this->mcpManagementTool()];
+    }
+
+    /**
+     * @return list<ToolkitInterface>
+     */
+    public function childToolkits(): array
+    {
+        $this->ensureServersBooted();
+
+        $children = [];
+
+        foreach ($this->service->listServers() as $server) {
+            if ($server['disabled'] || $server['toolCount'] === 0) {
+                continue;
+            }
+
+            $children[] = new McpServerToolkit($server['name'], $this->service);
+        }
+
+        return $children;
+    }
+
+    /**
+     * @return list<ToolkitCommandHandler>
+     */
+    public function commandHandlers(): array
+    {
+        return [new McpCommandHandler($this->service, $this->formatter)];
     }
 
     #[\Override]
     public function guidelines(): string
     {
-        $lines = [];
-        $lines[] = '<MCP-GUIDELINES>';
-        $lines[] = 'MCP (Model Context Protocol) tools are proxied from external MCP servers.';
-        $lines[] = '';
-
-        // Connected servers and their tools
-        $allStatus = $this->manager->getAllStatus();
-
-        if ($allStatus !== []) {
-            $lines[] = '## Connected MCP Servers';
-            $lines[] = '';
-
-            foreach ($allStatus as $name => $status) {
-                $state = $status['disabled'] ? 'DISABLED' : ($status['connected'] ? 'CONNECTED' : 'DISCONNECTED');
-                $serverLabel = $status['serverName'] ?? $name;
-                $lines[] = sprintf('- **%s** [%s] — %d tools', $serverLabel, $state, $status['toolCount']);
-
-                if ($status['error'] !== null) {
-                    $lines[] = sprintf('  Error: %s', $status['error']);
-                }
-            }
-
-            $lines[] = '';
-        }
-
-        // Server instructions
-        $instructions = $this->manager->getServerInstructions();
-
-        if ($instructions !== []) {
-            $lines[] = '## Server Instructions';
-            $lines[] = '';
-
-            foreach ($instructions as $name => $text) {
-                $lines[] = sprintf('### %s', $name);
-                $lines[] = $text;
-                $lines[] = '';
-            }
-        }
-
-        // Usage guidance
-        $lines[] = '## Usage';
-        $lines[] = '';
-        $lines[] = '- MCP tools are named `mcp_{servername}_{toolname}` — call them directly like any other tool.';
-        $lines[] = '- Use `mcp(action: "list")` to see all configured servers and their status.';
-        $lines[] = '- Use `mcp(action: "add", ...)` to add new MCP servers, then `restart_coqui` to activate.';
-        $lines[] = '- Use `mcp(action: "set_env", ...)` to configure credentials for a server.';
-        $lines[] = '- Use `mcp(action: "auth", server: "...", key: "AUTH_URL", value: "TOKEN_URL")` for OAuth browser-based auth.';
-        $lines[] = '- After adding or removing servers, call `restart_coqui` so new tools are registered.';
-        $lines[] = '</MCP-GUIDELINES>';
+        $lines = [
+            '<MCP-GUIDELINES>',
+            'MCP management commands and the `mcp` tool configure external MCP servers and inspect runtime state.',
+            '',
+            '## Usage',
+            '',
+            '- Use `mcp(action: "list")` or `/mcp list` to inspect configured servers, loading mode, and connectivity.',
+            '- Use `mcp(action: "add", ...)` or `/mcp add ...` to add new MCP servers.',
+            '- Use `mcp(action: "set_env", ...)` or `/mcp set-env ...` to link credentials for a server.',
+            '- Use `mcp(action: "auth", ...)` or `/mcp auth ...` for browser-based OAuth.',
+            '- Use `/mcp promote`, `/mcp demote`, or `/mcp auto` to control whether one server toolkit loads eagerly or stays deferred.',
+            '- Server-specific MCP tools are exposed through separate runtime child toolkits and remain namespaced as `mcp_{server}_{tool}`.',
+            '- Server config and connectivity changes apply to new agent turns without a full Coqui restart.',
+            '</MCP-GUIDELINES>',
+        ];
 
         return implode("\n", $lines);
     }
 
     /**
-     * Connect to all enabled servers at boot.
+     * Connect to enabled servers only when MCP child toolkits are needed.
+     * This keeps REPL command registration cheap before the first prompt.
      */
-    private function boot(): void
+    private function ensureServersBooted(): void
     {
-        $this->config->load();
-        $enabledServers = $this->config->listEnabledServers();
+        if ($this->serversBooted) {
+            return;
+        }
 
+        $enabledServers = $this->config->listEnabledServers();
         if ($enabledServers !== []) {
             $this->manager->connectAll();
         }
+
+        $this->serversBooted = true;
+    }
+
+    private static function resolveWorkspacePath(mixed $workspace): string
+    {
+        if (is_string($workspace) && $workspace !== '') {
+            return $workspace;
+        }
+
+        $cwd = getcwd() ?: '.';
+
+        return $cwd . '/.workspace';
     }
 
     /**
@@ -149,7 +182,7 @@ final class McpToolkit implements ToolkitInterface
                 new EnumParameter(
                     name: 'action',
                     description: 'The management action to perform.',
-                    values: ['list', 'add', 'remove', 'set_env', 'enable', 'disable', 'connect', 'disconnect', 'status', 'tools', 'auth'],
+                    values: ['list', 'add', 'update', 'remove', 'set_env', 'enable', 'disable', 'promote', 'demote', 'auto', 'connect', 'disconnect', 'refresh', 'status', 'tools', 'search', 'test', 'auth'],
                     required: true,
                 ),
                 new StringParameter(
@@ -177,6 +210,11 @@ final class McpToolkit implements ToolkitInterface
                     description: 'Credential value (for "set_env" action). The actual secret value to store.',
                     required: false,
                 ),
+                new StringParameter(
+                    name: 'query',
+                    description: 'Search query for MCP tool discovery (for "search" action).',
+                    required: false,
+                ),
             ],
             callback: fn(array $input): ToolResult => $this->executeMcpAction($input),
         );
@@ -191,14 +229,21 @@ final class McpToolkit implements ToolkitInterface
         return match ($action) {
             'list' => $this->actionList(),
             'add' => $this->actionAdd($server, $input),
+            'update' => $this->actionUpdate($server, $input),
             'remove' => $this->actionRemove($server),
             'set_env' => $this->actionSetEnv($server, $input),
             'enable' => $this->actionEnable($server),
             'disable' => $this->actionDisable($server),
+            'promote' => $this->actionPromote($server),
+            'demote' => $this->actionDemote($server),
+            'auto' => $this->actionAuto($server),
             'connect' => $this->actionConnect($server),
             'disconnect' => $this->actionDisconnect($server),
+            'refresh' => $this->actionRefresh($server),
             'status' => $this->actionStatus($server),
             'tools' => $this->actionTools($server),
+            'search' => $this->actionSearch($input),
+            'test' => $this->actionTest($server),
             'auth' => $this->actionAuth($server, $input),
             default => ToolResult::error(sprintf('Unknown MCP action: "%s"', $action)),
         };
@@ -206,32 +251,7 @@ final class McpToolkit implements ToolkitInterface
 
     private function actionList(): ToolResult
     {
-        $allStatus = $this->manager->getAllStatus();
-
-        if ($allStatus === []) {
-            return ToolResult::success(
-                "No MCP servers configured.\n\n"
-                . "Add one with: mcp(action: \"add\", server: \"server-name\", command: \"npx\", args: \"-y @modelcontextprotocol/server-xxx\")",
-            );
-        }
-
-        $lines = ['Configured MCP Servers:', ''];
-
-        foreach ($allStatus as $name => $status) {
-            $state = $status['disabled'] ? 'DISABLED' : ($status['connected'] ? 'CONNECTED' : 'DISCONNECTED');
-            $label = $status['serverName'] ?? $name;
-            $lines[] = sprintf('  %s [%s]', $label, $state);
-            $lines[] = sprintf('    Name: %s', $name);
-            $lines[] = sprintf('    Tools: %d', $status['toolCount']);
-
-            if ($status['error'] !== null) {
-                $lines[] = sprintf('    Error: %s', $status['error']);
-            }
-
-            $lines[] = '';
-        }
-
-        return ToolResult::success(implode("\n", $lines));
+        return ToolResult::success($this->formatter->formatServerList($this->service->listServers()));
     }
 
     /**
@@ -239,75 +259,62 @@ final class McpToolkit implements ToolkitInterface
      */
     private function actionAdd(string $server, array $input): ToolResult
     {
-        if ($server === '') {
-            return ToolResult::error('Server name is required. Usage: mcp(action: "add", server: "name", command: "npx", args: "-y @package/name")');
-        }
+        try {
+            $command = trim((string) ($input['command'] ?? ''));
+            $argsRaw = trim((string) ($input['args'] ?? ''));
+            $args = $argsRaw !== '' ? $this->service->parseArgs($argsRaw) : [];
+            $result = $this->service->addServer($server, $command, $args);
 
-        $command = trim((string) ($input['command'] ?? ''));
-
-        if ($command === '') {
-            return ToolResult::error('Command is required. Usage: mcp(action: "add", server: "' . $server . '", command: "npx", args: "-y @package/name")');
-        }
-
-        $argsRaw = trim((string) ($input['args'] ?? ''));
-        $args = $argsRaw !== '' ? $this->parseArgs($argsRaw) : [];
-
-        $this->config->load();
-
-        $existing = $this->config->getServer($server);
-
-        if ($existing !== null) {
-            return ToolResult::error(sprintf(
-                'Server "%s" already exists. Remove it first with mcp(action: "remove", server: "%s") or use a different name.',
-                $server,
-                $server,
+            return ToolResult::success(sprintf(
+                "MCP server \"%s\" added successfully.\n\n"
+                . "Command: %s %s\n"
+                . "Applied: %s\n\n"
+                . "If this server needs credentials, set them with mcp(action: \"set_env\", server: \"%s\", key: \"API_KEY_NAME\", value: \"your-key\").",
+                $result['name'],
+                $result['command'],
+                implode(' ', $result['args']),
+                $result['applied'],
+                $result['name'],
             ));
+        } catch (\Throwable $e) {
+            return ToolResult::error($e->getMessage());
         }
+    }
 
-        $serverConfig = [
-            'command' => $command,
-            'args' => $args,
-        ];
+    /**
+     * @param array<string, mixed> $input
+     */
+    private function actionUpdate(string $server, array $input): ToolResult
+    {
+        try {
+            $command = isset($input['command']) ? trim((string) $input['command']) : null;
+            $argsRaw = isset($input['args']) ? trim((string) $input['args']) : null;
+            $args = $argsRaw !== null && $argsRaw !== '' ? $this->service->parseArgs($argsRaw) : null;
+            $result = $this->service->updateServer($server, $command, $args);
 
-        $this->config->addServer($server, $serverConfig);
-        $this->config->save();
-
-        return ToolResult::success(sprintf(
-            "MCP server \"%s\" added successfully.\n\n"
-            . "Command: %s %s\n\n"
-            . "Next steps:\n"
-            . "1. If this server needs credentials, set them: mcp(action: \"set_env\", server: \"%s\", key: \"API_KEY_NAME\", value: \"your-key\")\n"
-            . "2. Call restart_coqui(reason: \"Activate MCP server %s\") to register the new tools.",
-            $server,
-            $command,
-            implode(' ', $args),
-            $server,
-            $server,
-        ));
+            return ToolResult::success(sprintf(
+                'MCP server "%s" updated successfully. Applied: %s.',
+                $result['name'],
+                $result['applied'],
+            ));
+        } catch (\Throwable $e) {
+            return ToolResult::error($e->getMessage());
+        }
     }
 
     private function actionRemove(string $server): ToolResult
     {
-        if ($server === '') {
-            return ToolResult::error('Server name is required.');
+        try {
+            $result = $this->service->removeServer($server);
+
+            return ToolResult::success(sprintf(
+                'MCP server "%s" removed. Applied: %s.',
+                $result['name'],
+                $result['applied'],
+            ));
+        } catch (\Throwable $e) {
+            return ToolResult::error($e->getMessage());
         }
-
-        $this->config->load();
-
-        if (!$this->config->removeServer($server)) {
-            return ToolResult::error(sprintf('Server "%s" not found.', $server));
-        }
-
-        // Disconnect if running
-        $this->manager->disconnectServer($server);
-
-        $this->config->save();
-
-        return ToolResult::success(sprintf(
-            "MCP server \"%s\" removed.\n\nCall restart_coqui(reason: \"Remove MCP server %s tools\") to unregister its tools.",
-            $server,
-            $server,
-        ));
     }
 
     /**
@@ -315,235 +322,177 @@ final class McpToolkit implements ToolkitInterface
      */
     private function actionSetEnv(string $server, array $input): ToolResult
     {
-        if ($server === '') {
-            return ToolResult::error('Server name is required.');
+        try {
+            $key = trim((string) ($input['key'] ?? ''));
+            $value = (string) ($input['value'] ?? '');
+            $result = $this->service->setServerSecret($server, $key, $value);
+
+            return ToolResult::success(sprintf(
+                "Environment variable \"%s\" linked for server \"%s\".\n\n"
+                . "Applied: %s\n"
+                . "If this value must survive process restarts, also store it in Coqui credentials.",
+                $result['key'],
+                $result['name'],
+                $result['applied'],
+            ));
+        } catch (\Throwable $e) {
+            return ToolResult::error($e->getMessage());
         }
-
-        $key = trim((string) ($input['key'] ?? ''));
-        $value = (string) ($input['value'] ?? '');
-
-        if ($key === '') {
-            return ToolResult::error('Key is required. Usage: mcp(action: "set_env", server: "name", key: "API_KEY", value: "your-key")');
-        }
-
-        $this->config->load();
-
-        if ($this->config->getServer($server) === null) {
-            return ToolResult::error(sprintf('Server "%s" not found.', $server));
-        }
-
-        // Store the actual value in environment (available immediately via putenv)
-        putenv($key . '=' . $value);
-
-        // Store a ${KEY} reference in the config (never the raw secret)
-        $this->config->setServerEnv($server, $key, '${' . $key . '}');
-        $this->config->save();
-
-        return ToolResult::success(sprintf(
-            "Environment variable \"%s\" set for server \"%s\".\n\n"
-            . "The value is available immediately. If the server is connected, use mcp(action: \"connect\", server: \"%s\") to reconnect with the new credentials.\n\n"
-            . "IMPORTANT: To persist this credential across restarts, also call:\n"
-            . "credentials(action: \"set\", key: \"%s\", value: \"...\")",
-            $key,
-            $server,
-            $server,
-            $key,
-        ));
     }
 
     private function actionEnable(string $server): ToolResult
     {
-        if ($server === '') {
-            return ToolResult::error('Server name is required.');
+        try {
+            $result = $this->service->enableServer($server);
+
+            return ToolResult::success(sprintf(
+                'MCP server "%s" enabled. Applied: %s.',
+                $result['name'],
+                $result['applied'],
+            ));
+        } catch (\Throwable $e) {
+            return ToolResult::error($e->getMessage());
         }
-
-        $this->config->load();
-
-        if (!$this->config->enableServer($server)) {
-            return ToolResult::error(sprintf('Server "%s" not found.', $server));
-        }
-
-        $this->config->save();
-
-        return ToolResult::success(sprintf(
-            "MCP server \"%s\" enabled.\n\nCall restart_coqui(reason: \"Enable MCP server %s\") to connect and register its tools.",
-            $server,
-            $server,
-        ));
     }
 
     private function actionDisable(string $server): ToolResult
     {
-        if ($server === '') {
-            return ToolResult::error('Server name is required.');
+        try {
+            $result = $this->service->disableServer($server);
+
+            return ToolResult::success(sprintf(
+                'MCP server "%s" disabled. Applied: %s.',
+                $result['name'],
+                $result['applied'],
+            ));
+        } catch (\Throwable $e) {
+            return ToolResult::error($e->getMessage());
         }
+    }
 
-        $this->config->load();
+    private function actionPromote(string $server): ToolResult
+    {
+        try {
+            $result = $this->service->promoteServer($server);
 
-        if (!$this->config->disableServer($server)) {
-            return ToolResult::error(sprintf('Server "%s" not found.', $server));
+            return ToolResult::success(sprintf('MCP server "%s" loading mode set to %s. Applied: %s.', $result['name'], $result['loading_mode'], $result['applied']));
+        } catch (\Throwable $e) {
+            return ToolResult::error($e->getMessage());
         }
+    }
 
-        $this->manager->disconnectServer($server);
-        $this->config->save();
+    private function actionDemote(string $server): ToolResult
+    {
+        try {
+            $result = $this->service->demoteServer($server);
 
-        return ToolResult::success(sprintf(
-            "MCP server \"%s\" disabled and disconnected.\n\nCall restart_coqui(reason: \"Disable MCP server %s\") to unregister its tools.",
-            $server,
-            $server,
-        ));
+            return ToolResult::success(sprintf('MCP server "%s" loading mode set to %s. Applied: %s.', $result['name'], $result['loading_mode'], $result['applied']));
+        } catch (\Throwable $e) {
+            return ToolResult::error($e->getMessage());
+        }
+    }
+
+    private function actionAuto(string $server): ToolResult
+    {
+        try {
+            $result = $this->service->autoServer($server);
+
+            return ToolResult::success(sprintf('MCP server "%s" loading mode set to %s. Applied: %s.', $result['name'], $result['loading_mode'], $result['applied']));
+        } catch (\Throwable $e) {
+            return ToolResult::error($e->getMessage());
+        }
     }
 
     private function actionConnect(string $server): ToolResult
     {
-        if ($server === '') {
-            return ToolResult::error('Server name is required.');
-        }
-
         try {
-            $this->manager->connectServer($server);
-            $status = $this->manager->getServerStatus($server);
-            $toolCount = $status['toolCount'];
+            $result = $this->service->connectServer($server);
 
             return ToolResult::success(sprintf(
-                "MCP server \"%s\" connected successfully.\n"
-                . "Server: %s %s\n"
-                . "Tools discovered: %d\n\n"
-                . "NOTE: To register the newly discovered tools with the agent, call restart_coqui(reason: \"Register MCP tools from %s\").",
-                $server,
-                $status['serverName'] ?? $server,
-                $status['serverVersion'] ?? '',
-                $toolCount,
-                $server,
+                "MCP server \"%s\" connected successfully in %d ms.\n\n%s",
+                $result['name'],
+                $result['duration_ms'],
+                $this->formatter->formatServerStatus($result['snapshot']),
             ));
         } catch (\Throwable $e) {
-            return ToolResult::error(sprintf(
-                'Failed to connect to MCP server "%s": %s',
-                $server,
-                $e->getMessage(),
-            ));
+            return ToolResult::error(sprintf('Failed to connect to MCP server "%s": %s', $server, $e->getMessage()));
         }
     }
 
     private function actionDisconnect(string $server): ToolResult
     {
-        if ($server === '') {
-            return ToolResult::error('Server name is required.');
+        try {
+            $result = $this->service->disconnectServer($server);
+
+            return ToolResult::success(sprintf('MCP server "%s" disconnected. Applied: %s.', $result['name'], $result['applied']));
+        } catch (\Throwable $e) {
+            return ToolResult::error($e->getMessage());
         }
+    }
 
-        $this->manager->disconnectServer($server);
+    private function actionRefresh(string $server): ToolResult
+    {
+        try {
+            $result = $this->service->refreshServer($server);
 
-        return ToolResult::success(sprintf('MCP server "%s" disconnected.', $server));
+            return ToolResult::success(sprintf(
+                "MCP server \"%s\" refreshed in %d ms.\n\n%s",
+                $result['name'],
+                $result['duration_ms'],
+                $this->formatter->formatServerStatus($result['snapshot']),
+            ));
+        } catch (\Throwable $e) {
+            return ToolResult::error($e->getMessage());
+        }
     }
 
     private function actionStatus(string $server): ToolResult
     {
-        if ($server === '') {
-            return ToolResult::error('Server name is required.');
+        try {
+            return ToolResult::success($this->formatter->formatServerStatus($this->service->getServerSnapshot($server)));
+        } catch (\Throwable $e) {
+            return ToolResult::error($e->getMessage());
         }
-
-        $this->config->load();
-
-        if ($this->config->getServer($server) === null) {
-            return ToolResult::error(sprintf('Server "%s" not found.', $server));
-        }
-
-        $status = $this->manager->getServerStatus($server);
-        $config = $this->config->getServer($server);
-
-        $lines = [sprintf('MCP Server: %s', $server), ''];
-        $lines[] = sprintf('  Status: %s', $status['connected'] ? 'CONNECTED' : 'DISCONNECTED');
-        $lines[] = sprintf('  Disabled: %s', $this->config->isDisabled($server) ? 'yes' : 'no');
-
-        if ($status['serverName'] !== null) {
-            $lines[] = sprintf('  Server Name: %s', $status['serverName']);
-        }
-
-        if ($status['serverVersion'] !== null) {
-            $lines[] = sprintf('  Server Version: %s', $status['serverVersion']);
-        }
-
-        $lines[] = sprintf('  Tools: %d', $status['toolCount']);
-
-        if ($status['error'] !== null) {
-            $lines[] = sprintf('  Error: %s', $status['error']);
-        }
-
-        if (isset($config['command'])) {
-            $args = is_array($config['args'] ?? null) ? implode(' ', $config['args']) : '';
-            $lines[] = sprintf('  Command: %s %s', $config['command'], $args);
-        }
-
-        $env = $this->config->getEnv($server);
-
-        if ($env !== []) {
-            $lines[] = '  Environment:';
-
-            foreach ($env as $key => $val) {
-                $lines[] = sprintf('    %s = %s', $key, $val);
-            }
-        }
-
-        if ($status['instructions'] !== null) {
-            $lines[] = '';
-            $lines[] = '  Instructions:';
-            $lines[] = '    ' . str_replace("\n", "\n    ", $status['instructions']);
-        }
-
-        return ToolResult::success(implode("\n", $lines));
     }
 
     private function actionTools(string $server): ToolResult
     {
-        if ($server === '') {
-            return ToolResult::error('Server name is required.');
+        try {
+            return ToolResult::success($this->formatter->formatServerTools($server, $this->service->getServerTools($server)));
+        } catch (\Throwable $e) {
+            return ToolResult::error($e->getMessage());
         }
+    }
 
-        $tools = $this->manager->getServerToolDefs($server);
+    /**
+     * @param array<string, mixed> $input
+     */
+    private function actionSearch(array $input): ToolResult
+    {
+        try {
+            $query = trim((string) ($input['query'] ?? ''));
+            $server = trim((string) ($input['server'] ?? ''));
 
-        if ($tools === []) {
-            $status = $this->manager->getServerStatus($server);
-
-            if (!$status['connected']) {
-                return ToolResult::error(sprintf(
-                    'Server "%s" is not connected. Use mcp(action: "connect", server: "%s") first.',
-                    $server,
-                    $server,
-                ));
-            }
-
-            return ToolResult::success(sprintf('Server "%s" has no tools.', $server));
+            return ToolResult::success($this->formatter->formatSearchResults($query, $this->service->searchTools($query, $server !== '' ? $server : null)));
+        } catch (\Throwable $e) {
+            return ToolResult::error($e->getMessage());
         }
+    }
 
-        $lines = [sprintf('Tools from MCP server "%s":', $server), ''];
+    private function actionTest(string $server): ToolResult
+    {
+        try {
+            $result = $this->service->testServer($server);
 
-        foreach ($tools as $tool) {
-            $namespacedName = 'mcp_' . preg_replace('/[^a-z0-9_]/', '_', strtolower($server)) . '_' . $tool['name'];
-            $lines[] = sprintf('  %s', $namespacedName);
-            $lines[] = sprintf('    Original: %s', $tool['name']);
-
-            if ($tool['description'] !== '') {
-                $lines[] = sprintf('    Description: %s', $tool['description']);
-            }
-
-            $props = $tool['inputSchema']['properties'] ?? [];
-
-            if (is_array($props) && $props !== []) {
-                $required = $tool['inputSchema']['required'] ?? [];
-                $lines[] = '    Parameters:';
-
-                foreach ($props as $pName => $pSchema) {
-                    $type = $pSchema['type'] ?? 'any';
-                    $req = in_array($pName, is_array($required) ? $required : [], true) ? 'required' : 'optional';
-                    $desc = $pSchema['description'] ?? '';
-                    $lines[] = sprintf('      - %s (%s, %s)%s', $pName, $type, $req, $desc !== '' ? ': ' . $desc : '');
-                }
-            }
-
-            $lines[] = '';
+            return ToolResult::success(sprintf(
+                "MCP server \"%s\" connectivity test succeeded in %d ms.\n\n%s",
+                $result['name'],
+                $result['duration_ms'],
+                $this->formatter->formatServerStatus($result['snapshot']),
+            ));
+        } catch (\Throwable $e) {
+            return ToolResult::error($e->getMessage());
         }
-
-        return ToolResult::success(implode("\n", $lines));
     }
 
     /**
@@ -556,118 +505,29 @@ final class McpToolkit implements ToolkitInterface
      */
     private function actionAuth(string $server, array $input): ToolResult
     {
-        if ($server === '') {
-            return ToolResult::error('Server name is required.');
-        }
-
-        $this->config->load();
-
-        if ($this->config->getServer($server) === null) {
-            return ToolResult::error(sprintf('Server "%s" not found.', $server));
-        }
-
-        // key = authUrl, value = tokenUrl, command = clientId (optional), args = scopes (optional)
-        $authUrl = trim((string) ($input['key'] ?? ''));
-        $tokenUrl = trim((string) ($input['value'] ?? ''));
-        $clientId = trim((string) ($input['command'] ?? ''));
-        $scopesRaw = trim((string) ($input['args'] ?? ''));
-
-        if ($authUrl === '' || $tokenUrl === '') {
-            return ToolResult::error(
-                'Auth URL and token URL are required for OAuth.'
-                . ' Usage: mcp(action: "auth", server: "name", key: "https://auth.example.com/authorize", value: "https://auth.example.com/token")'
-                . ' Optionally: command: "client-id", args: "scope1 scope2"',
-            );
-        }
-
-        $authConfig = [
-            'authUrl' => $authUrl,
-            'tokenUrl' => $tokenUrl,
-        ];
-
-        if ($clientId !== '') {
-            $authConfig['clientId'] = $clientId;
-        }
-
-        if ($scopesRaw !== '') {
-            $authConfig['scopes'] = explode(' ', $scopesRaw);
-        }
-
         try {
-            $tokens = $this->oauthHandler->authorize($server, $authConfig);
+            $authUrl = trim((string) ($input['key'] ?? ''));
+            $tokenUrl = trim((string) ($input['value'] ?? ''));
+            $clientId = trim((string) ($input['command'] ?? ''));
+            $scopesRaw = trim((string) ($input['args'] ?? ''));
+            $scopes = $scopesRaw !== '' ? $this->service->parseArgs($scopesRaw) : [];
+            $result = $this->service->authorizeServer($server, $authUrl, $tokenUrl, $clientId, $scopes);
 
-            // Make the access token available as an env var for the server
-            $envKey = strtoupper(preg_replace('/[^a-zA-Z0-9_]/', '_', $server) ?? $server) . '_ACCESS_TOKEN';
-            putenv($envKey . '=' . $tokens['access_token']);
-
-            // Store reference in server config
-            $this->config->setServerEnv($server, $envKey, '${' . $envKey . '}');
-            $this->config->save();
-
-            $expiresInfo = isset($tokens['expires_at'])
-                ? sprintf(' Expires: %s.', date('Y-m-d H:i:s', $tokens['expires_at']))
+            $expiresInfo = $result['expires_at'] !== null
+                ? sprintf(' Expires: %s.', gmdate('Y-m-d H:i:s', $result['expires_at']))
                 : '';
 
             return ToolResult::success(sprintf(
                 "OAuth authentication successful for server \"%s\".\n\n"
-                . "Access token stored as env var \"%s\".%s\n\n"
-                . "The token is available immediately. Reconnect the server to use it:\n"
-                . "mcp(action: \"connect\", server: \"%s\")",
-                $server,
-                $envKey,
+                . "Access token stored as env var \"%s\".%s\n"
+                . "Applied: %s",
+                $result['server'],
+                $result['env_key'],
                 $expiresInfo,
-                $server,
+                $result['applied'],
             ));
         } catch (\Throwable $e) {
-            return ToolResult::error(sprintf(
-                'OAuth authentication failed for server "%s": %s',
-                $server,
-                $e->getMessage(),
-            ));
+            return ToolResult::error(sprintf('OAuth authentication failed for server "%s": %s', $server, $e->getMessage()));
         }
-    }
-
-    /**
-     * Parse a space-separated args string into an array.
-     *
-     * Handles quoted strings: "foo bar" stays as one argument.
-     *
-     * @return list<string>
-     */
-    private function parseArgs(string $raw): array
-    {
-        $args = [];
-        $current = '';
-        $inQuote = false;
-        $quoteChar = '';
-        $len = strlen($raw);
-
-        for ($i = 0; $i < $len; $i++) {
-            $char = $raw[$i];
-
-            if ($inQuote) {
-                if ($char === $quoteChar) {
-                    $inQuote = false;
-                } else {
-                    $current .= $char;
-                }
-            } elseif ($char === '"' || $char === "'") {
-                $inQuote = true;
-                $quoteChar = $char;
-            } elseif ($char === ' ') {
-                if ($current !== '') {
-                    $args[] = $current;
-                    $current = '';
-                }
-            } else {
-                $current .= $char;
-            }
-        }
-
-        if ($current !== '') {
-            $args[] = $current;
-        }
-
-        return $args;
     }
 }

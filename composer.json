@@ -16,11 +16,11 @@
         "toolkit"
     ],
     "require": {
-        "php": "^8.4"
+        "php": "^8.4",
+        "carmelosantana/php-agents": "^0.12"
     },
     "require-dev": {
-        "carmelosantana/php-agents": "^0.7",
-        "pestphp/pest": "^3.0",
+        "pestphp/pest": "^4.0",
         "phpstan/phpstan": "^2.0"
     },
     "autoload": {
@@ -29,6 +29,9 @@
         }
     },
     "autoload-dev": {
+        "files": [
+            "stubs/coqui_repl_contracts.php"
+        ],
         "psr-4": {
             "CoquiBot\\Toolkits\\Mcp\\Tests\\": "tests/"
         }

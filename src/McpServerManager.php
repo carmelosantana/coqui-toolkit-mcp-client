@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace CoquiBot\Toolkits\Mcp;
 
+use CarmeloSantana\PHPAgents\Contract\ToolInterface;
 use CarmeloSantana\PHPAgents\Tool\Tool;
 use CarmeloSantana\PHPAgents\Tool\ToolResult;
 use CarmeloSantana\PHPAgents\Tool\Parameter\Parameter;
@@ -150,7 +151,7 @@ final class McpServerManager
      *
      * Tools are namespaced as mcp_{servername}_{toolname}.
      *
-     * @return Tool[]
+    * @return list<ToolInterface>
      */
     public function getTools(): array
     {
@@ -168,6 +169,30 @@ final class McpServerManager
                     callback: $this->buildToolCallback($serverName, $toolDef['name']),
                 );
             }
+        }
+
+        return $tools;
+    }
+
+    /**
+     * Get discovered tools for one connected MCP server as Tool objects.
+     *
+    * @return list<ToolInterface>
+     */
+    public function getToolsForServer(string $serverName): array
+    {
+        $tools = [];
+
+        foreach ($this->serverTools[$serverName] ?? [] as $toolDef) {
+            $namespacedName = $this->namespaceTool($serverName, $toolDef['name']);
+            $parameters = $this->schemaConverter->convert($toolDef['inputSchema']);
+
+            $tools[] = new Tool(
+                name: $namespacedName,
+                description: $this->buildToolDescription($serverName, $toolDef),
+                parameters: $parameters,
+                callback: $this->buildToolCallback($serverName, $toolDef['name']),
+            );
         }
 
         return $tools;
@@ -342,6 +367,8 @@ final class McpServerManager
 
         if ($desc === '') {
             $desc = sprintf('Tool "%s" from MCP server "%s"', $toolDef['name'], $serverName);
+        } else {
+            $desc = sprintf('%s [MCP server: %s]', $desc, $serverName);
         }
 
         return $desc;
