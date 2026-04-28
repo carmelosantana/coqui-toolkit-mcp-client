@@ -27,7 +27,7 @@ use CoquiBot\Toolkits\Mcp\Transport\TransportInterface;
  */
 final class McpClient
 {
-    private const string PROTOCOL_VERSION = '2025-06-18';
+    private const string PROTOCOL_VERSION = '2025-11-25';
     private const string CLIENT_NAME = 'coqui';
     private const string CLIENT_VERSION = '0.1.0';
 
@@ -229,10 +229,8 @@ final class McpClient
     {
         $response = $this->request('initialize', [
             'protocolVersion' => self::PROTOCOL_VERSION,
-            'capabilities' => (object) [
-                'roots' => ['listChanged' => true],
-            ],
-            'clientInfo' => [
+            'capabilities' => (object) [],
+            'clientInfo' => (object) [
                 'name' => self::CLIENT_NAME,
                 'version' => self::CLIENT_VERSION,
             ],

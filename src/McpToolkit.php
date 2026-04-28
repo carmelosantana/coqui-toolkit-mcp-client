@@ -40,7 +40,6 @@ final class McpToolkit implements ToolkitInterface, ReplCommandProvider, Composi
     private readonly McpManagementService $service;
     private readonly McpManagementFormatter $formatter;
     private readonly ServerLoadingModeStore $loadingStore;
-    private bool $serversBooted = false;
 
     public function __construct(
         private readonly string $workspacePath,
@@ -96,7 +95,7 @@ final class McpToolkit implements ToolkitInterface, ReplCommandProvider, Composi
      */
     public function childToolkits(): array
     {
-        $this->ensureServersBooted();
+        $this->syncServers();
 
         $children = [];
 
@@ -134,7 +133,7 @@ final class McpToolkit implements ToolkitInterface, ReplCommandProvider, Composi
             '- Use `mcp(action: "auth", ...)` or `/mcp auth ...` for browser-based OAuth.',
             '- Use `/mcp promote`, `/mcp demote`, or `/mcp auto` to control whether one server toolkit loads eagerly or stays deferred.',
             '- Server-specific MCP tools are exposed through separate runtime child toolkits and remain namespaced as `mcp_{server}_{tool}`.',
-            '- Server config and connectivity changes apply to new agent turns without a full Coqui restart.',
+            '- Server config changes are re-read on future turns. Use `/mcp connect`, `/mcp refresh`, or `/restart` if a running session needs an immediate runtime rebuild.',
             '</MCP-GUIDELINES>',
         ];
 
@@ -145,18 +144,28 @@ final class McpToolkit implements ToolkitInterface, ReplCommandProvider, Composi
      * Connect to enabled servers only when MCP child toolkits are needed.
      * This keeps REPL command registration cheap before the first prompt.
      */
-    private function ensureServersBooted(): void
+    private function syncServers(): void
     {
-        if ($this->serversBooted) {
-            return;
+        $this->config->load(force: true);
+        $servers = $this->config->listServers();
+
+        foreach ($this->manager->connectedServerNames() as $serverName) {
+            if (!isset($servers[$serverName]) || $this->config->isDisabled($serverName)) {
+                $this->manager->disconnectServer($serverName);
+            }
         }
 
-        $enabledServers = $this->config->listEnabledServers();
-        if ($enabledServers !== []) {
-            $this->manager->connectAll();
-        }
+        foreach (array_keys($this->config->listEnabledServers()) as $serverName) {
+            if ($this->manager->getServerStatus($serverName)['connected']) {
+                continue;
+            }
 
-        $this->serversBooted = true;
+            try {
+                $this->manager->connectServer($serverName);
+            } catch (\Throwable) {
+                // Preserve the error for status surfaces; the current turn can continue.
+            }
+        }
     }
 
     private static function resolveWorkspacePath(mixed $workspace): string
@@ -268,12 +277,14 @@ final class McpToolkit implements ToolkitInterface, ReplCommandProvider, Composi
             return ToolResult::success(sprintf(
                 "MCP server \"%s\" added successfully.\n\n"
                 . "Command: %s %s\n"
-                . "Applied: %s\n\n"
+                . "Applied: %s\n"
+                . "%s\n\n"
                 . "If this server needs credentials, set them with mcp(action: \"set_env\", server: \"%s\", key: \"API_KEY_NAME\", value: \"your-key\").",
                 $result['name'],
                 $result['command'],
                 implode(' ', $result['args']),
                 $result['applied'],
+                $this->runtimeRefreshNotice($result['name']),
                 $result['name'],
             ));
         } catch (\Throwable $e) {
@@ -293,9 +304,10 @@ final class McpToolkit implements ToolkitInterface, ReplCommandProvider, Composi
             $result = $this->service->updateServer($server, $command, $args);
 
             return ToolResult::success(sprintf(
-                'MCP server "%s" updated successfully. Applied: %s.',
+                "MCP server \"%s\" updated successfully. Applied: %s.\n%s",
                 $result['name'],
                 $result['applied'],
+                $this->runtimeRefreshNotice($result['name']),
             ));
         } catch (\Throwable $e) {
             return ToolResult::error($e->getMessage());
@@ -346,9 +358,10 @@ final class McpToolkit implements ToolkitInterface, ReplCommandProvider, Composi
             $result = $this->service->enableServer($server);
 
             return ToolResult::success(sprintf(
-                'MCP server "%s" enabled. Applied: %s.',
+                "MCP server \"%s\" enabled. Applied: %s.\n%s",
                 $result['name'],
                 $result['applied'],
+                $this->runtimeRefreshNotice($result['name']),
             ));
         } catch (\Throwable $e) {
             return ToolResult::error($e->getMessage());
@@ -520,14 +533,25 @@ final class McpToolkit implements ToolkitInterface, ReplCommandProvider, Composi
             return ToolResult::success(sprintf(
                 "OAuth authentication successful for server \"%s\".\n\n"
                 . "Access token stored as env var \"%s\".%s\n"
-                . "Applied: %s",
+                . "Applied: %s\n"
+                . "%s",
                 $result['server'],
                 $result['env_key'],
                 $expiresInfo,
                 $result['applied'],
+                $this->runtimeRefreshNotice($result['server']),
             ));
         } catch (\Throwable $e) {
             return ToolResult::error(sprintf('OAuth authentication failed for server "%s": %s', $server, $e->getMessage()));
         }
+    }
+
+    private function runtimeRefreshNotice(string $server): string
+    {
+        return sprintf(
+            'Future turns will re-read this config. If the current REPL or API process needs "%s" immediately, use mcp(action: "connect", server: "%s") or restart Coqui.',
+            $server,
+            $server,
+        );
     }
 }

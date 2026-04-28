@@ -58,7 +58,7 @@ final class McpServerManager
      */
     public function connectAll(): void
     {
-        $this->config->load();
+        $this->config->load(force: true);
 
         foreach ($this->config->listEnabledServers() as $name => $serverConfig) {
             try {
@@ -76,7 +76,7 @@ final class McpServerManager
      */
     public function connectServer(string $name): void
     {
-        $this->config->load();
+        $this->config->load(force: true);
         $serverConfig = $this->config->getServer($name);
 
         if ($serverConfig === null) {
@@ -111,10 +111,19 @@ final class McpServerManager
         // Create client with stdio transport
         $transport = new StdioTransport(timeout: $this->timeout);
         $client = new McpClient($transport);
-        $client->connect($command, $args, $resolvedEnv);
 
-        // Discover tools
-        $tools = $client->listTools();
+        try {
+            $client->connect($command, $args, $resolvedEnv);
+
+            // Discover tools
+            $tools = $client->listTools();
+        } catch (\Throwable $e) {
+            $client->disconnect();
+            $wrapped = $this->wrapConnectionFailure($name, $command, $args, $transport->lastStderr(), $e);
+            $this->errors[$name] = $wrapped->getMessage();
+
+            throw $wrapped;
+        }
 
         $this->clients[$name] = $client;
         $this->serverTools[$name] = array_values($tools);
@@ -243,7 +252,7 @@ final class McpServerManager
      */
     public function getAllStatus(): array
     {
-        $this->config->load();
+        $this->config->load(force: true);
         $status = [];
 
         foreach ($this->config->listServers() as $name => $serverConfig) {
@@ -282,6 +291,14 @@ final class McpServerManager
     }
 
     /**
+     * @return list<string>
+     */
+    public function connectedServerNames(): array
+    {
+        return array_keys($this->clients);
+    }
+
+    /**
      * Get tool definitions for a specific server (raw MCP format).
      *
      * @return list<array{name: string, description: string, inputSchema: array<string, mixed>}>
@@ -308,6 +325,48 @@ final class McpServerManager
     {
         $this->disconnectServer($name);
         $this->connectServer($name);
+    }
+
+    /**
+     * @param list<string> $args
+     */
+    private function wrapConnectionFailure(string $serverName, string $command, array $args, string $stderr, \Throwable $error): McpConnectionException
+    {
+        $stderr = trim($stderr);
+        $reason = trim($error->getMessage());
+
+        if ($stderr !== '' && !str_contains($reason, $stderr)) {
+            $reason .= ($reason !== '' ? ' — stderr: ' : '') . $stderr;
+        }
+
+        if ($error instanceof McpConnectionException) {
+            if (str_contains($error->getMessage(), 'did not respond within')) {
+                return McpConnectionException::timeout($serverName, $this->timeout, $stderr);
+            }
+
+            if (str_contains($error->getMessage(), 'is not connected')) {
+                return McpConnectionException::disconnected($serverName, $stderr);
+            }
+
+            if (str_starts_with($error->getMessage(), 'Failed to start MCP server process:')) {
+                return McpConnectionException::processStartFailed(
+                    $this->formatServerCommand($serverName, $command, $args),
+                    $reason,
+                );
+            }
+        }
+
+        return McpConnectionException::initializeFailed($serverName, $reason);
+    }
+
+    /**
+     * @param list<string> $args
+     */
+    private function formatServerCommand(string $serverName, string $command, array $args): string
+    {
+        $parts = array_filter([$command, ...$args], static fn(string $part): bool => trim($part) !== '');
+
+        return sprintf('%s [%s]', $serverName, implode(' ', $parts));
     }
 
     /**

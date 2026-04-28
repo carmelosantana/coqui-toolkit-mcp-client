@@ -102,7 +102,7 @@ final class McpCommandHandler implements ToolkitCommandHandler, ToolkitCommandHe
                 new ToolkitCommandExample('/mcp test github', 'Reconnect and verify that GitHub tools can be discovered.'),
             ],
             notes: [
-                'Server add, update, enable, and env-link changes apply to future agent turns without a full Coqui restart.',
+                'Server config changes are re-read on future turns, but an already-running REPL or API process may still need /mcp connect, /mcp refresh, or /restart for an immediate runtime rebuild.',
                 'Tool discovery remains namespaced as mcp_{server}_{tool} so per-tool visibility can reuse Coqui\'s existing tool controls.',
                 'Use promote, demote, and auto to control whether a specific MCP server toolkit loads eagerly or stays deferred under the toolkit token budget.',
             ],
@@ -225,7 +225,8 @@ final class McpCommandHandler implements ToolkitCommandHandler, ToolkitCommandHe
         $command = $this->requireToken($tokens, 2, 'Command is required.');
         $args = array_slice($tokens, 3);
         $result = $this->service->addServer($server, $command, $args);
-        $context->io->success(sprintf('MCP server "%s" added. Available to new turns immediately.', $result['name']));
+        $context->io->success(sprintf('MCP server "%s" added. Saved for future turns.', $result['name']));
+        $context->io->note($this->runtimeRefreshNotice($result['name']));
     }
 
     /**
@@ -238,6 +239,7 @@ final class McpCommandHandler implements ToolkitCommandHandler, ToolkitCommandHe
         $args = count($tokens) > 3 ? array_slice($tokens, 3) : null;
         $result = $this->service->updateServer($server, $command, $args);
         $context->io->success(sprintf('MCP server "%s" updated (%s).', $result['name'], $result['applied']));
+        $context->io->note($this->runtimeRefreshNotice($result['name']));
     }
 
     /**
@@ -256,8 +258,9 @@ final class McpCommandHandler implements ToolkitCommandHandler, ToolkitCommandHe
     private function handleEnable(ToolkitReplContext $context, array $tokens): void
     {
         $server = $this->requireToken($tokens, 1, 'Server name is required.');
-        $this->service->enableServer($server);
+        $result = $this->service->enableServer($server);
         $context->io->success(sprintf('MCP server "%s" enabled.', $server));
+        $context->io->note($this->runtimeRefreshNotice($result['name']));
     }
 
     /**
@@ -314,6 +317,7 @@ final class McpCommandHandler implements ToolkitCommandHandler, ToolkitCommandHe
 
         $result = $this->service->setServerSecret($server, $key, $value);
         $context->io->success(sprintf('Linked %s to server "%s" (%s).', $result['key'], $server, $result['applied']));
+        $context->io->note($this->runtimeRefreshNotice($result['name']));
     }
 
     /**
@@ -332,6 +336,7 @@ final class McpCommandHandler implements ToolkitCommandHandler, ToolkitCommandHe
             ? sprintf(' Expires: %s.', gmdate('Y-m-d H:i:s', $result['expires_at']))
             : '';
         $context->io->success(sprintf('OAuth complete for "%s". Token linked as %s.%s', $server, $result['env_key'], $suffix));
+        $context->io->note($this->runtimeRefreshNotice($server));
     }
 
     /**
@@ -346,5 +351,15 @@ final class McpCommandHandler implements ToolkitCommandHandler, ToolkitCommandHe
         }
 
         return $value;
+    }
+
+    private function runtimeRefreshNotice(string $server): string
+    {
+        return sprintf(
+            'If the current REPL or API process needs "%s" immediately, run /mcp connect %s, /mcp refresh %s, or /restart.',
+            $server,
+            $server,
+            $server,
+        );
     }
 }

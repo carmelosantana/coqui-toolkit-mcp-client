@@ -110,7 +110,7 @@ final readonly class Message
         }
 
         if ($this->params !== null) {
-            $data['params'] = $this->params;
+            $data['params'] = $this->params === [] ? (object) [] : $this->params;
         }
 
         if ($this->result !== null) {

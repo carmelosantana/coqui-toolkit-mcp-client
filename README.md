@@ -21,7 +21,7 @@ When installed alongside Coqui, the toolkit is **auto-discovered** via Composer'
 1. MCP servers are configured in `.workspace/mcp.json` using Claude Desktop-style stdio definitions plus optional operator metadata such as `description`.
 2. The root toolkit exposes one management tool, `mcp`, plus the `/mcp` REPL command.
 3. Connected servers expose their discovered tools through server-scoped child toolkits, with namespaced tool names like `mcp_github_create_issue`.
-4. Server add, rename, update, enable, disable, env-link, and connectivity changes hot-apply where possible and otherwise affect the next agent turn without requiring a full Coqui restart.
+4. Server add, rename, update, enable, disable, env-link, and connectivity changes are re-read on future agent turns. Use `mcp(action: "connect", ...)`, `/mcp connect`, `/mcp refresh`, or a full restart when an already-running process needs an immediate runtime rebuild.
 5. Per-server loading mode can be set to eager, deferred, or auto so MCP tool loading participates in Coqui's existing toolkit deferment model.
 
 ## Major Capabilities
@@ -125,7 +125,7 @@ MCP servers often require API keys. The workflow integrates with Coqui's credent
 2. Agent sets the credential: `mcp(action: "set_env", server: "github", key: "GITHUB_TOKEN", value: "ghp_xxx")`
 3. Agent persists for restarts: `credentials(action: "set", key: "GITHUB_TOKEN", value: "ghp_xxx")`
 4. Agent can verify connectivity immediately: `mcp(action: "test", server: "github")`
-5. Tools become eligible for future turns without a full Coqui restart.
+5. Tools become eligible for future turns without a full Coqui restart, and you can force an immediate runtime refresh with `mcp(action: "connect", ...)`, `/mcp connect`, `/mcp refresh`, or `/restart`.
 
 The `set_env` action uses `putenv()` for immediate availability and stores a `${GITHUB_TOKEN}` reference in `mcp.json` (never the raw secret).
 
