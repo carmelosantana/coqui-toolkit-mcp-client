@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace CoquiBot\Toolkits\Mcp\Config;
 
+use CarmeloSantana\PathHelper\PathHelper;
+
 /**
  * Manages the .workspace/mcp.json configuration file.
  *
@@ -41,7 +43,7 @@ final class McpConfig
      */
     public function configPath(): string
     {
-        return rtrim($this->workspacePath, '/') . '/' . self::CONFIG_FILENAME;
+        return PathHelper::trimTrailingSlash($this->workspacePath) . '/' . self::CONFIG_FILENAME;
     }
 
     /**

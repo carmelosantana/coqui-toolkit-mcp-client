@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace CoquiBot\Toolkits\Mcp\Support;
 
+use CarmeloSantana\PathHelper\PathHelper;
 use CoquiBot\Toolkits\Mcp\McpServerToolkit;
 
 /**
@@ -20,7 +21,7 @@ final class ServerLoadingModeStore
 
     public function __construct(string $workspacePath)
     {
-        $this->filePath = rtrim($workspacePath, '/') . '/toolkit-loading.json';
+        $this->filePath = PathHelper::trimTrailingSlash($workspacePath) . '/toolkit-loading.json';
     }
 
     public function getMode(string $serverName): string

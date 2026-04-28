@@ -113,6 +113,12 @@ test('save writes valid JSON to disk', function () {
     rmdir($path);
 });
 
+test('configPath trims windows style trailing separators', function () {
+    $config = new McpConfig('C:\\workspace\\');
+
+    expect($config->configPath())->toBe('C:\\workspace/mcp.json');
+});
+
 // -- CRUD --
 
 test('addServer and getServer', function () {

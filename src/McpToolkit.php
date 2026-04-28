@@ -16,6 +16,7 @@ use CoquiBot\Coqui\Contract\ToolkitCommandHandler;
 use CoquiBot\Toolkits\Mcp\Command\McpCommandHandler;
 use CoquiBot\Toolkits\Mcp\Auth\OAuthHandler;
 use CoquiBot\Toolkits\Mcp\Config\McpConfig;
+use CarmeloSantana\PathHelper\PathHelper;
 use CoquiBot\Toolkits\Mcp\Support\McpManagementFormatter;
 use CoquiBot\Toolkits\Mcp\Support\McpServerPolicy;
 use CoquiBot\Toolkits\Mcp\Support\ServerLoadingModeStore;
@@ -176,7 +177,7 @@ final class McpToolkit implements ToolkitInterface, ReplCommandProvider, Composi
 
         $cwd = getcwd() ?: '.';
 
-        return $cwd . '/.workspace';
+        return PathHelper::trimTrailingSlash($cwd) . '/.workspace';
     }
 
     /**
