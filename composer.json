@@ -17,7 +17,7 @@
     ],
     "require": {
         "php": "^8.4",
-        "carmelosantana/php-agents": "^0.12"
+        "carmelosantana/php-agents": "^0.13"
     },
     "require-dev": {
         "pestphp/pest": "^4.0",
