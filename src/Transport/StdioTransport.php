@@ -12,7 +12,9 @@ use CoquiBot\Toolkits\Mcp\JsonRpc\Message;
  * Stdio transport for MCP servers.
  *
  * Spawns the MCP server as a subprocess via proc_open() and communicates
- * over stdin (write) / stdout (read) using newline-delimited JSON-RPC 2.0.
+ * over stdin (write) / stdout (read) using newline-delimited JSON-RPC.
+ * For compatibility with framed transports, Content-Length messages are
+ * still accepted as a fallback on reads.
  * Stderr is captured for diagnostics but not parsed as protocol messages.
  *
  * Unlike the browser toolkit's fire-and-forget pattern, this transport
@@ -37,7 +39,7 @@ final class StdioTransport implements TransportInterface
     /** @var resource|null stderr pipe (read) */
     private mixed $stderr = null;
 
-    /** Buffered partial reads from stdout (incomplete JSON lines). */
+    /** Buffered partial reads from stdout. */
     private string $readBuffer = '';
 
     /** Last stderr output captured (for diagnostics). */
@@ -54,8 +56,8 @@ final class StdioTransport implements TransportInterface
             $this->close();
         }
 
-        $cmdParts = array_map('escapeshellarg', [$command, ...$args]);
-        $cmdString = implode(' ', $cmdParts);
+        $procCommand = [$command, ...$args];
+        $commandLabel = implode(' ', $procCommand);
 
         $descriptors = [
             0 => ['pipe', 'r'], // stdin — we write
@@ -67,7 +69,7 @@ final class StdioTransport implements TransportInterface
         $processEnv = array_merge($this->getParentEnv(), $env);
 
         $process = proc_open(
-            $cmdString,
+            $procCommand,
             $descriptors,
             $pipes,
             null,
@@ -75,7 +77,7 @@ final class StdioTransport implements TransportInterface
         );
 
         if (!is_resource($process)) {
-            throw McpConnectionException::processStartFailed($cmdString, 'proc_open returned false');
+            throw McpConnectionException::processStartFailed($commandLabel, 'proc_open returned false');
         }
 
         $this->process = $process;
@@ -97,7 +99,7 @@ final class StdioTransport implements TransportInterface
             $this->cleanup();
 
             throw McpConnectionException::processStartFailed(
-                $cmdString,
+                $commandLabel,
                 $stderrOutput !== '' ? $stderrOutput : 'Process exited immediately with code ' . $status['exitcode'],
             );
         }
@@ -108,8 +110,7 @@ final class StdioTransport implements TransportInterface
     {
         $this->assertConnected();
 
-        // Write the request as a newline-delimited JSON line
-        $this->writeLine($request->toJson());
+        $this->writeMessage($request->toJson());
 
         // Read the response, matching by request ID
         return $this->readResponse($request->id ?? 0);
@@ -119,7 +120,7 @@ final class StdioTransport implements TransportInterface
     public function sendNotification(Message $notification): void
     {
         $this->assertConnected();
-        $this->writeLine($notification->toJson());
+        $this->writeMessage($notification->toJson());
     }
 
     #[\Override]
@@ -199,19 +200,26 @@ final class StdioTransport implements TransportInterface
     }
 
     /**
-     * Write a JSON line to the server's stdin.
+     * Write a newline-delimited JSON-RPC message to the server's stdin.
      */
-    private function writeLine(string $json): void
+    private function writeMessage(string $json): void
     {
         if (!is_resource($this->stdin)) {
             throw McpConnectionException::disconnected('stdio');
         }
 
-        $line = $json . "\n";
-        $written = fwrite($this->stdin, $line);
+        $frame = $json . "\n";
+        $offset = 0;
+        $length = strlen($frame);
 
-        if ($written === false || $written !== strlen($line)) {
-            throw McpConnectionException::disconnected('stdio');
+        while ($offset < $length) {
+            $written = fwrite($this->stdin, substr($frame, $offset));
+
+            if ($written === false || $written === 0) {
+                throw McpConnectionException::disconnected('stdio');
+            }
+
+            $offset += $written;
         }
 
         fflush($this->stdin);
@@ -236,23 +244,21 @@ final class StdioTransport implements TransportInterface
                 throw McpConnectionException::disconnected('stdio');
             }
 
-            // Try to read a complete line from stdout
-            $line = $this->readLine();
+            $payload = $this->readMessagePayload();
 
-            if ($line === null) {
+            if ($payload === null) {
                 usleep(self::POLL_INTERVAL_US);
                 continue;
             }
 
-            // Skip empty lines
-            $line = trim($line);
+            $payload = trim($payload);
 
-            if ($line === '') {
+            if ($payload === '') {
                 continue;
             }
 
             try {
-                $message = Message::fromJson($line);
+                $message = Message::fromJson($payload);
             } catch (\InvalidArgumentException) {
                 // Skip unparseable output (server may emit debug text)
                 continue;
@@ -283,23 +289,18 @@ final class StdioTransport implements TransportInterface
     }
 
     /**
-     * Read a single complete line from the read buffer + stdout.
+     * Read a single complete MCP payload from the read buffer + stdout.
      *
-     * Returns null if no complete line is available yet.
+     * Returns null if no complete payload is available yet.
      */
-    private function readLine(): ?string
+    private function readMessagePayload(): ?string
     {
-        // Check buffer first for a complete line
-        $newlinePos = strpos($this->readBuffer, "\n");
+        $payload = $this->extractPayloadFromBuffer();
 
-        if ($newlinePos !== false) {
-            $line = substr($this->readBuffer, 0, $newlinePos);
-            $this->readBuffer = substr($this->readBuffer, $newlinePos + 1);
-
-            return $line;
+        if ($payload !== null) {
+            return $payload;
         }
 
-        // Read more data from stdout
         if (!is_resource($this->stdout)) {
             return null;
         }
@@ -312,17 +313,77 @@ final class StdioTransport implements TransportInterface
 
         $this->readBuffer .= $chunk;
 
-        // Check again for a complete line
-        $newlinePos = strpos($this->readBuffer, "\n");
+        return $this->extractPayloadFromBuffer();
+    }
 
-        if ($newlinePos !== false) {
-            $line = substr($this->readBuffer, 0, $newlinePos);
-            $this->readBuffer = substr($this->readBuffer, $newlinePos + 1);
+    private function extractPayloadFromBuffer(): ?string
+    {
+        $payload = $this->extractFramedPayload();
 
-            return $line;
+        if ($payload !== null) {
+            return $payload;
         }
 
-        return null;
+        return $this->extractLegacyLinePayload();
+    }
+
+    private function extractFramedPayload(): ?string
+    {
+        if (!preg_match('/\A((?:[A-Za-z0-9-]+:[^\r\n]*\r?\n)+)\r?\n/s', $this->readBuffer, $matches)) {
+            return null;
+        }
+
+        $headerBlock = $matches[1];
+        $framePrefixLength = strlen($matches[0]);
+        $contentLength = null;
+
+        foreach (preg_split('/\r?\n/', trim($headerBlock)) ?: [] as $line) {
+            $parts = explode(':', $line, 2);
+
+            if (count($parts) !== 2) {
+                continue;
+            }
+
+            if (strtolower(trim($parts[0])) !== 'content-length') {
+                continue;
+            }
+
+            $value = trim($parts[1]);
+
+            if (ctype_digit($value)) {
+                $contentLength = (int) $value;
+                break;
+            }
+        }
+
+        if ($contentLength === null) {
+            $this->readBuffer = substr($this->readBuffer, $framePrefixLength);
+
+            return null;
+        }
+
+        if (strlen($this->readBuffer) < $framePrefixLength + $contentLength) {
+            return null;
+        }
+
+        $payload = substr($this->readBuffer, $framePrefixLength, $contentLength);
+        $this->readBuffer = substr($this->readBuffer, $framePrefixLength + $contentLength);
+
+        return $payload;
+    }
+
+    private function extractLegacyLinePayload(): ?string
+    {
+        $newlinePos = strpos($this->readBuffer, "\n");
+
+        if ($newlinePos === false) {
+            return null;
+        }
+
+        $line = substr($this->readBuffer, 0, $newlinePos);
+        $this->readBuffer = substr($this->readBuffer, $newlinePos + 1);
+
+        return $line;
     }
 
     /**

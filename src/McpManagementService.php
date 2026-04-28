@@ -56,7 +56,7 @@ final class McpManagementService
      */
     public function configuredServerNames(): array
     {
-        $this->config->load();
+        $this->config->load(force: true);
 
         return array_keys($this->config->listServers());
     }
@@ -74,7 +74,7 @@ final class McpManagementService
      */
     public function listServers(): array
     {
-        $this->config->load();
+        $this->config->load(force: true);
         $servers = [];
 
         foreach (array_keys($this->config->listServers()) as $name) {
@@ -89,7 +89,7 @@ final class McpManagementService
      */
     public function getServerSnapshot(string $name): array
     {
-        $this->config->load();
+        $this->config->load(force: true);
         $config = $this->config->getServer($name);
 
         if ($config === null) {
@@ -137,7 +137,7 @@ final class McpManagementService
 
         $this->validateStdioDefinition($command, $args);
 
-        $this->config->load();
+        $this->config->load(force: true);
 
         if ($this->config->getServer($name) !== null) {
             throw new \RuntimeException(sprintf('Server "%s" already exists.', $name));
@@ -176,7 +176,7 @@ final class McpManagementService
         ?string $description = null,
     ): array
     {
-        $this->config->load();
+        $this->config->load(force: true);
         $existing = $this->config->getServer($name);
 
         if ($existing === null) {
@@ -275,7 +275,7 @@ final class McpManagementService
      */
     public function removeServer(string $name): array
     {
-        $this->config->load();
+        $this->config->load(force: true);
 
         if (!$this->config->removeServer($name)) {
             throw new \RuntimeException(sprintf('Server "%s" not found.', $name));
@@ -342,7 +342,7 @@ final class McpManagementService
      */
     public function enableServer(string $name): array
     {
-        $this->config->load();
+        $this->config->load(force: true);
 
         if (!$this->config->enableServer($name)) {
             throw new \RuntimeException(sprintf('Server "%s" not found.', $name));
@@ -362,7 +362,7 @@ final class McpManagementService
      */
     public function disableServer(string $name): array
     {
-        $this->config->load();
+        $this->config->load(force: true);
 
         if (!$this->config->disableServer($name)) {
             throw new \RuntimeException(sprintf('Server "%s" not found.', $name));
@@ -656,7 +656,7 @@ final class McpManagementService
 
     private function assertServerExists(string $name): void
     {
-        $this->config->load();
+        $this->config->load(force: true);
 
         if ($this->config->getServer($name) === null) {
             throw new \RuntimeException(sprintf('Server "%s" not found.', $name));

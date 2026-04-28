@@ -79,3 +79,42 @@ test('mcp management service can rename servers and preserve description plus lo
     unlink($path . '/toolkit-loading.json');
     rmdir($path);
 });
+
+test('mcp management service re-reads externally modified config files', function () {
+    $path = sys_get_temp_dir() . '/mcp-loading-test-' . uniqid();
+    mkdir($path, 0o755, true);
+
+    file_put_contents($path . '/mcp.json', json_encode([
+        'mcpServers' => [
+            'github' => [
+                'command' => 'npx',
+                'args' => ['-y', '@modelcontextprotocol/server-github'],
+            ],
+        ],
+    ], JSON_THROW_ON_ERROR));
+
+    $config = new McpConfig($path);
+    $service = new McpManagementService(
+        $config,
+        new McpServerManager($config),
+        new OAuthHandler($path),
+        new ServerLoadingModeStore($path),
+    );
+
+    expect($service->configuredServerNames())->toBe(['github']);
+
+    file_put_contents($path . '/mcp.json', json_encode([
+        'mcpServers' => [
+            'sonic-pi' => [
+                'command' => 'npx',
+                'args' => ['-y', 'sonic-pi-mcp'],
+            ],
+        ],
+    ], JSON_THROW_ON_ERROR));
+
+    expect($service->configuredServerNames())->toBe(['sonic-pi'])
+        ->and($service->getServerSnapshot('sonic-pi')['command'])->toBe('npx');
+
+    unlink($path . '/mcp.json');
+    rmdir($path);
+});

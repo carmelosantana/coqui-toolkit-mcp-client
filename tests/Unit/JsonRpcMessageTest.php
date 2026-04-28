@@ -128,7 +128,16 @@ test('toJson produces valid JSON-RPC notification', function () {
 
     expect($decoded['jsonrpc'])->toBe('2.0')
         ->and($decoded['method'])->toBe('notifications/initialized')
+        ->and($decoded['params'])->toBe([])
         ->and($decoded)->not->toHaveKey('id');
+});
+
+test('toJson encodes empty params as an object on the wire', function () {
+    $request = Message::request(42, 'tools/list');
+    $notification = Message::notification('notifications/initialized');
+
+    expect($request->toJson())->toContain('"params":{}')
+        ->and($notification->toJson())->toContain('"params":{}');
 });
 
 test('toJson round-trips through fromJson for requests', function () {
