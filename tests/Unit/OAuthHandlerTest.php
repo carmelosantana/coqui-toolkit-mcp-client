@@ -94,3 +94,12 @@ test('getAccessToken returns null when no tokens stored', function () {
 
     rmdir($path);
 });
+
+test('oauth token paths trim windows style trailing separators', function () {
+    $handler = new OAuthHandler('C:\\workspace\\');
+    $tokensDir = new ReflectionMethod(OAuthHandler::class, 'tokensDir');
+    $tokensPath = new ReflectionMethod(OAuthHandler::class, 'tokensPath');
+
+    expect($tokensDir->invoke($handler))->toBe('C:\\workspace/.mcp-tokens');
+    expect($tokensPath->invoke($handler, 'GitHub'))->toBe('C:\\workspace/.mcp-tokens/github.json');
+});

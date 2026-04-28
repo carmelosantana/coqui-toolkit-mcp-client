@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace CoquiBot\Toolkits\Mcp\Auth;
 
+use CarmeloSantana\PathHelper\PathHelper;
+
 /**
  * Handles OAuth 2.1 browser-based authentication for MCP servers.
  *
@@ -427,7 +429,7 @@ final class OAuthHandler
 
     private function tokensDir(): string
     {
-        return rtrim($this->workspacePath, '/') . '/' . self::TOKENS_DIR;
+        return PathHelper::trimTrailingSlash($this->workspacePath) . '/' . self::TOKENS_DIR;
     }
 
     private function tokensPath(string $serverName): string

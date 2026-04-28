@@ -16,6 +16,7 @@
         "toolkit"
     ],
     "require": {
+        "carmelosantana/php-pathhelper": "^0.1",
         "php": "^8.4",
         "carmelosantana/php-agents": "^0.13"
     },

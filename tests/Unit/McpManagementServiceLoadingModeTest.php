@@ -118,3 +118,10 @@ test('mcp management service re-reads externally modified config files', functio
     unlink($path . '/mcp.json');
     rmdir($path);
 });
+
+test('server loading mode store trims windows style trailing separators', function () {
+    $store = new ServerLoadingModeStore('C:\\workspace\\');
+    $property = new ReflectionProperty(ServerLoadingModeStore::class, 'filePath');
+
+    expect($property->getValue($store))->toBe('C:\\workspace/toolkit-loading.json');
+});
