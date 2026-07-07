@@ -18,8 +18,12 @@ use CarmeloSantana\PathHelper\PathHelper;
  * 6. Returns the access token for use as an env var
  *
  * Also handles token refresh when tokens expire.
+ *
+ * Implements the core McpOAuthInterface so Coqui core's MCP runtime can adopt
+ * it via McpRuntime::registerOAuth(). The interface resolves via the PHPStan
+ * stub for analysis and via the real core interface at runtime.
  */
-final class OAuthHandler
+final class OAuthHandler implements \CoquiBot\Coqui\Contract\McpOAuthInterface
 {
     private const string TOKENS_DIR = '.mcp-tokens';
     private const int CALLBACK_TIMEOUT = 120; // 2 minutes to complete auth

@@ -1,9 +1,12 @@
 # Coqui MCP Toolkit
 
-MCP (Model Context Protocol) toolkit for [Coqui](https://github.com/AgentCoqui/coqui). It gives Coqui a first-class MCP management surface across the `mcp` tool, the `/mcp` REPL command, and the HTTP API, while exposing connected server tools as namespaced runtime child toolkits.
+MCP (Model Context Protocol) management UX for [Coqui](https://github.com/AgentCoqui/coqui). It gives Coqui a first-class MCP management surface across the `mcp` tool, the `/mcp` REPL command, and OAuth-based server authorization.
+
+> **Requires a Coqui core that ships the MCP engine.** As of this release the MCP engine and runtime — the client, stdio transport, config, per-server tool exposure, and the shared `McpManagementService` — live in Coqui core (`CoquiBot\Coqui\Mcp\*`). This package no longer bundles the engine. At boot it consumes core's runtime via `$context['mcp_runtime']`, registers its OAuth handler with core, and delegates every management action to core's service. When no runtime is present (older or misconfigured core) the toolkit no-ops cleanly and exposes no tools or REPL commands. Some sections below still describe engine internals and per-server child toolkits that are now owned by Coqui core.
 
 ## Requirements
 
+- A Coqui core that provides the MCP engine + `McpRuntime` (`registerOAuth()` / `managementService()`)
 - PHP 8.4+
 - Node.js 18+ (most MCP servers run via `npx`)
 - Python 3.10+ (for Python-based MCP servers via `uvx`)

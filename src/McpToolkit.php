@@ -10,49 +10,38 @@ use CarmeloSantana\PHPAgents\Tool\Tool;
 use CarmeloSantana\PHPAgents\Tool\ToolResult;
 use CarmeloSantana\PHPAgents\Tool\Parameter\EnumParameter;
 use CarmeloSantana\PHPAgents\Tool\Parameter\StringParameter;
-use CoquiBot\Coqui\Contract\CompositeToolkitProvider;
 use CoquiBot\Coqui\Contract\ReplCommandProvider;
 use CoquiBot\Coqui\Contract\ToolkitCommandHandler;
+use CoquiBot\Coqui\Mcp\McpManagementService;
 use CoquiBot\Toolkits\Mcp\Command\McpCommandHandler;
 use CoquiBot\Toolkits\Mcp\Auth\OAuthHandler;
-use CoquiBot\Toolkits\Mcp\Config\McpConfig;
 use CarmeloSantana\PathHelper\PathHelper;
 use CoquiBot\Toolkits\Mcp\Support\McpManagementFormatter;
-use CoquiBot\Toolkits\Mcp\Support\McpServerPolicy;
-use CoquiBot\Toolkits\Mcp\Support\ServerLoadingModeStore;
 
 /**
- * MCP (Model Context Protocol) toolkit for Coqui.
+ * MCP (Model Context Protocol) management toolkit for Coqui.
  *
- * Consumes MCP servers as agent tools via stdio transport. Each configured
- * MCP server's tools are discovered at boot, namespaced as
- * mcp_{servername}_{toolname}, and registered with the orchestrator.
+ * The MCP engine (client, transport, config, per-server tool exposure) lives in
+ * Coqui core. This package provides only the management UX: the `mcp` agent
+ * tool, the `/mcp` REPL command, and the OAuth handler. It consumes core's
+ * runtime via $context['mcp_runtime'] and delegates every management action to
+ * core's McpManagementService.
  *
- * Provides a management tool `mcp` for the LLM to add, remove, configure,
- * and connect MCP servers.
+ * When no runtime is present (old/misconfigured core), the toolkit no-ops
+ * cleanly: tools() and commandHandlers() both return [].
  *
  * Auto-discovered by Coqui's ToolkitDiscovery when installed via Composer.
  */
-final class McpToolkit implements ToolkitInterface, ReplCommandProvider, CompositeToolkitProvider
+final class McpToolkit implements ToolkitInterface, ReplCommandProvider
 {
-    private readonly McpConfig $config;
-    private readonly McpServerManager $manager;
-    private readonly OAuthHandler $oauthHandler;
-    private readonly McpManagementService $service;
     private readonly McpManagementFormatter $formatter;
-    private readonly ServerLoadingModeStore $loadingStore;
+
+    private ?McpManagementService $service = null;
 
     public function __construct(
         private readonly string $workspacePath,
-        ?McpServerPolicy $policy = null,
     ) {
-        $this->config = new McpConfig($this->workspacePath);
-        $this->manager = new McpServerManager($this->config);
-        $this->oauthHandler = new OAuthHandler($this->workspacePath);
-        $this->loadingStore = new ServerLoadingModeStore($this->workspacePath);
-        $this->service = new McpManagementService($this->config, $this->manager, $this->oauthHandler, $this->loadingStore, $policy);
         $this->formatter = new McpManagementFormatter();
-        $this->config->load();
     }
 
     /**
@@ -61,21 +50,27 @@ final class McpToolkit implements ToolkitInterface, ReplCommandProvider, Composi
     public static function fromCoquiContext(array $context): self
     {
         $workspace = self::resolveWorkspacePath($context['workspacePath'] ?? null);
-        $config = $context['config'] ?? null;
-        $policy = null;
+        $runtime = $context['mcp_runtime'] ?? null;
 
-        if (is_object($config) && method_exists($config, 'get')) {
-            $policy = McpServerPolicy::fromConfigValues(
-                $config->get('agents.defaults.mcp.allowedStdioCommands'),
-                $config->get('agents.defaults.mcp.deniedStdioCommands'),
-            );
+        $toolkit = new self($workspace);
+
+        if (is_object($runtime)
+            && method_exists($runtime, 'registerOAuth')
+            && method_exists($runtime, 'managementService')
+        ) {
+            // Provide the OAuth implementation core lacks, then adopt its service.
+            $runtime->registerOAuth(new OAuthHandler($toolkit->workspacePath));
+            $toolkit->service = $runtime->managementService();
         }
 
-        return new self($workspace, $policy);
+        return $toolkit;
     }
 
     /**
      * Factory method for ToolkitDiscovery — reads workspace path from environment.
+     *
+     * The engine no longer lives here, so the toolkit constructed without a
+     * runtime no-ops until fromCoquiContext supplies core's management service.
      */
     public static function fromEnv(): self
     {
@@ -88,27 +83,11 @@ final class McpToolkit implements ToolkitInterface, ReplCommandProvider, Composi
     #[\Override]
     public function tools(): array
     {
-        return [$this->mcpManagementTool()];
-    }
-
-    /**
-     * @return list<ToolkitInterface>
-     */
-    public function childToolkits(): array
-    {
-        $this->syncServers();
-
-        $children = [];
-
-        foreach ($this->service->listServers() as $server) {
-            if ($server['disabled'] || $server['toolCount'] === 0) {
-                continue;
-            }
-
-            $children[] = new McpServerToolkit($server['name'], $this->service);
+        if ($this->service === null) {
+            return [];
         }
 
-        return $children;
+        return [$this->mcpManagementTool()];
     }
 
     /**
@@ -116,6 +95,10 @@ final class McpToolkit implements ToolkitInterface, ReplCommandProvider, Composi
      */
     public function commandHandlers(): array
     {
+        if ($this->service === null) {
+            return [];
+        }
+
         return [new McpCommandHandler($this->service, $this->formatter)];
     }
 
@@ -133,40 +116,12 @@ final class McpToolkit implements ToolkitInterface, ReplCommandProvider, Composi
             '- Use `mcp(action: "set_env", ...)` or `/mcp set-env ...` to link credentials for a server.',
             '- Use `mcp(action: "auth", ...)` or `/mcp auth ...` for browser-based OAuth.',
             '- Use `/mcp promote`, `/mcp demote`, or `/mcp auto` to control whether one server toolkit loads eagerly or stays deferred.',
-            '- Server-specific MCP tools are exposed through separate runtime child toolkits and remain namespaced as `mcp_{server}_{tool}`.',
+            '- Server-specific MCP tools are exposed by Coqui core and remain namespaced as `mcp_{server}_{tool}`.',
             '- Server config changes are re-read on future turns. Use `/mcp connect`, `/mcp refresh`, or `/restart` if a running session needs an immediate runtime rebuild.',
             '</MCP-GUIDELINES>',
         ];
 
         return implode("\n", $lines);
-    }
-
-    /**
-     * Connect to enabled servers only when MCP child toolkits are needed.
-     * This keeps REPL command registration cheap before the first prompt.
-     */
-    private function syncServers(): void
-    {
-        $this->config->load(force: true);
-        $servers = $this->config->listServers();
-
-        foreach ($this->manager->connectedServerNames() as $serverName) {
-            if (!isset($servers[$serverName]) || $this->config->isDisabled($serverName)) {
-                $this->manager->disconnectServer($serverName);
-            }
-        }
-
-        foreach (array_keys($this->config->listEnabledServers()) as $serverName) {
-            if ($this->manager->getServerStatus($serverName)['connected']) {
-                continue;
-            }
-
-            try {
-                $this->manager->connectServer($serverName);
-            } catch (\Throwable) {
-                // Preserve the error for status surfaces; the current turn can continue.
-            }
-        }
     }
 
     private static function resolveWorkspacePath(mixed $workspace): string
@@ -178,6 +133,20 @@ final class McpToolkit implements ToolkitInterface, ReplCommandProvider, Composi
         $cwd = getcwd() ?: '.';
 
         return PathHelper::trimTrailingSlash($cwd) . '/.workspace';
+    }
+
+    /**
+     * The core management service. Only reachable through the `mcp` tool, which
+     * is only registered when the service is present, so this never throws in
+     * practice — the guard keeps the null-safe contract explicit for analysis.
+     */
+    private function service(): McpManagementService
+    {
+        if ($this->service === null) {
+            throw new \RuntimeException('MCP runtime is unavailable; no management service is registered.');
+        }
+
+        return $this->service;
     }
 
     /**
@@ -261,7 +230,7 @@ final class McpToolkit implements ToolkitInterface, ReplCommandProvider, Composi
 
     private function actionList(): ToolResult
     {
-        return ToolResult::success($this->formatter->formatServerList($this->service->listServers()));
+        return ToolResult::success($this->formatter->formatServerList($this->service()->listServers()));
     }
 
     /**
@@ -272,8 +241,8 @@ final class McpToolkit implements ToolkitInterface, ReplCommandProvider, Composi
         try {
             $command = trim((string) ($input['command'] ?? ''));
             $argsRaw = trim((string) ($input['args'] ?? ''));
-            $args = $argsRaw !== '' ? $this->service->parseArgs($argsRaw) : [];
-            $result = $this->service->addServer($server, $command, $args);
+            $args = $argsRaw !== '' ? $this->service()->parseArgs($argsRaw) : [];
+            $result = $this->service()->addServer($server, $command, $args);
 
             return ToolResult::success(sprintf(
                 "MCP server \"%s\" added successfully.\n\n"
@@ -301,8 +270,8 @@ final class McpToolkit implements ToolkitInterface, ReplCommandProvider, Composi
         try {
             $command = isset($input['command']) ? trim((string) $input['command']) : null;
             $argsRaw = isset($input['args']) ? trim((string) $input['args']) : null;
-            $args = $argsRaw !== null && $argsRaw !== '' ? $this->service->parseArgs($argsRaw) : null;
-            $result = $this->service->updateServer($server, $command, $args);
+            $args = $argsRaw !== null && $argsRaw !== '' ? $this->service()->parseArgs($argsRaw) : null;
+            $result = $this->service()->updateServer($server, $command, $args);
 
             return ToolResult::success(sprintf(
                 "MCP server \"%s\" updated successfully. Applied: %s.\n%s",
@@ -318,7 +287,7 @@ final class McpToolkit implements ToolkitInterface, ReplCommandProvider, Composi
     private function actionRemove(string $server): ToolResult
     {
         try {
-            $result = $this->service->removeServer($server);
+            $result = $this->service()->removeServer($server);
 
             return ToolResult::success(sprintf(
                 'MCP server "%s" removed. Applied: %s.',
@@ -338,7 +307,7 @@ final class McpToolkit implements ToolkitInterface, ReplCommandProvider, Composi
         try {
             $key = trim((string) ($input['key'] ?? ''));
             $value = (string) ($input['value'] ?? '');
-            $result = $this->service->setServerSecret($server, $key, $value);
+            $result = $this->service()->setServerSecret($server, $key, $value);
 
             return ToolResult::success(sprintf(
                 "Environment variable \"%s\" linked for server \"%s\".\n\n"
@@ -356,7 +325,7 @@ final class McpToolkit implements ToolkitInterface, ReplCommandProvider, Composi
     private function actionEnable(string $server): ToolResult
     {
         try {
-            $result = $this->service->enableServer($server);
+            $result = $this->service()->enableServer($server);
 
             return ToolResult::success(sprintf(
                 "MCP server \"%s\" enabled. Applied: %s.\n%s",
@@ -372,7 +341,7 @@ final class McpToolkit implements ToolkitInterface, ReplCommandProvider, Composi
     private function actionDisable(string $server): ToolResult
     {
         try {
-            $result = $this->service->disableServer($server);
+            $result = $this->service()->disableServer($server);
 
             return ToolResult::success(sprintf(
                 'MCP server "%s" disabled. Applied: %s.',
@@ -387,7 +356,7 @@ final class McpToolkit implements ToolkitInterface, ReplCommandProvider, Composi
     private function actionPromote(string $server): ToolResult
     {
         try {
-            $result = $this->service->promoteServer($server);
+            $result = $this->service()->promoteServer($server);
 
             return ToolResult::success(sprintf('MCP server "%s" loading mode set to %s. Applied: %s.', $result['name'], $result['loading_mode'], $result['applied']));
         } catch (\Throwable $e) {
@@ -398,7 +367,7 @@ final class McpToolkit implements ToolkitInterface, ReplCommandProvider, Composi
     private function actionDemote(string $server): ToolResult
     {
         try {
-            $result = $this->service->demoteServer($server);
+            $result = $this->service()->demoteServer($server);
 
             return ToolResult::success(sprintf('MCP server "%s" loading mode set to %s. Applied: %s.', $result['name'], $result['loading_mode'], $result['applied']));
         } catch (\Throwable $e) {
@@ -409,7 +378,7 @@ final class McpToolkit implements ToolkitInterface, ReplCommandProvider, Composi
     private function actionAuto(string $server): ToolResult
     {
         try {
-            $result = $this->service->autoServer($server);
+            $result = $this->service()->autoServer($server);
 
             return ToolResult::success(sprintf('MCP server "%s" loading mode set to %s. Applied: %s.', $result['name'], $result['loading_mode'], $result['applied']));
         } catch (\Throwable $e) {
@@ -420,7 +389,7 @@ final class McpToolkit implements ToolkitInterface, ReplCommandProvider, Composi
     private function actionConnect(string $server): ToolResult
     {
         try {
-            $result = $this->service->connectServer($server);
+            $result = $this->service()->connectServer($server);
 
             return ToolResult::success(sprintf(
                 "MCP server \"%s\" connected successfully in %d ms.\n\n%s",
@@ -436,7 +405,7 @@ final class McpToolkit implements ToolkitInterface, ReplCommandProvider, Composi
     private function actionDisconnect(string $server): ToolResult
     {
         try {
-            $result = $this->service->disconnectServer($server);
+            $result = $this->service()->disconnectServer($server);
 
             return ToolResult::success(sprintf('MCP server "%s" disconnected. Applied: %s.', $result['name'], $result['applied']));
         } catch (\Throwable $e) {
@@ -447,7 +416,7 @@ final class McpToolkit implements ToolkitInterface, ReplCommandProvider, Composi
     private function actionRefresh(string $server): ToolResult
     {
         try {
-            $result = $this->service->refreshServer($server);
+            $result = $this->service()->refreshServer($server);
 
             return ToolResult::success(sprintf(
                 "MCP server \"%s\" refreshed in %d ms.\n\n%s",
@@ -463,7 +432,7 @@ final class McpToolkit implements ToolkitInterface, ReplCommandProvider, Composi
     private function actionStatus(string $server): ToolResult
     {
         try {
-            return ToolResult::success($this->formatter->formatServerStatus($this->service->getServerSnapshot($server)));
+            return ToolResult::success($this->formatter->formatServerStatus($this->service()->getServerSnapshot($server)));
         } catch (\Throwable $e) {
             return ToolResult::error($e->getMessage());
         }
@@ -472,7 +441,7 @@ final class McpToolkit implements ToolkitInterface, ReplCommandProvider, Composi
     private function actionTools(string $server): ToolResult
     {
         try {
-            return ToolResult::success($this->formatter->formatServerTools($server, $this->service->getServerTools($server)));
+            return ToolResult::success($this->formatter->formatServerTools($server, $this->service()->getServerTools($server)));
         } catch (\Throwable $e) {
             return ToolResult::error($e->getMessage());
         }
@@ -487,7 +456,7 @@ final class McpToolkit implements ToolkitInterface, ReplCommandProvider, Composi
             $query = trim((string) ($input['query'] ?? ''));
             $server = trim((string) ($input['server'] ?? ''));
 
-            return ToolResult::success($this->formatter->formatSearchResults($query, $this->service->searchTools($query, $server !== '' ? $server : null)));
+            return ToolResult::success($this->formatter->formatSearchResults($query, $this->service()->searchTools($query, $server !== '' ? $server : null)));
         } catch (\Throwable $e) {
             return ToolResult::error($e->getMessage());
         }
@@ -496,7 +465,7 @@ final class McpToolkit implements ToolkitInterface, ReplCommandProvider, Composi
     private function actionTest(string $server): ToolResult
     {
         try {
-            $result = $this->service->testServer($server);
+            $result = $this->service()->testServer($server);
 
             return ToolResult::success(sprintf(
                 "MCP server \"%s\" connectivity test succeeded in %d ms.\n\n%s",
@@ -524,8 +493,8 @@ final class McpToolkit implements ToolkitInterface, ReplCommandProvider, Composi
             $tokenUrl = trim((string) ($input['value'] ?? ''));
             $clientId = trim((string) ($input['command'] ?? ''));
             $scopesRaw = trim((string) ($input['args'] ?? ''));
-            $scopes = $scopesRaw !== '' ? $this->service->parseArgs($scopesRaw) : [];
-            $result = $this->service->authorizeServer($server, $authUrl, $tokenUrl, $clientId, $scopes);
+            $scopes = $scopesRaw !== '' ? $this->service()->parseArgs($scopesRaw) : [];
+            $result = $this->service()->authorizeServer($server, $authUrl, $tokenUrl, $clientId, $scopes);
 
             $expiresInfo = $result['expires_at'] !== null
                 ? sprintf(' Expires: %s.', gmdate('Y-m-d H:i:s', $result['expires_at']))
