@@ -1,6 +1,6 @@
 {
     "name": "coquibot/coqui-toolkit-mcp-client",
-    "description": "MCP (Model Context Protocol) toolkit for Coqui — consume MCP servers as agent tools",
+    "description": "MCP management UX for Coqui — the `mcp` agent tool, `/mcp` REPL command, and OAuth handler. Requires a Coqui core that ships the MCP engine + McpRuntime; this package no longer bundles the engine itself.",
     "type": "library",
     "license": "MIT",
     "authors": [
@@ -31,7 +31,8 @@
     },
     "autoload-dev": {
         "files": [
-            "stubs/coqui_repl_contracts.php"
+            "stubs/coqui_repl_contracts.php",
+            "stubs/coqui_mcp_contracts.php"
         ],
         "psr-4": {
             "CoquiBot\\Toolkits\\Mcp\\Tests\\": "tests/"
@@ -53,7 +54,7 @@
             "toolkits": [
                 "CoquiBot\\Toolkits\\Mcp\\McpToolkit"
             ],
-            "description": "MCP (Model Context Protocol) — consume any MCP server as agent tools via stdio transport"
+            "description": "MCP (Model Context Protocol) management — the `mcp` tool and `/mcp` REPL for configuring servers; the engine ships in Coqui core"
         }
     },
     "minimum-stability": "dev",

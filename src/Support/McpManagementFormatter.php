@@ -7,8 +7,13 @@ namespace CoquiBot\Toolkits\Mcp\Support;
 /**
  * Shared human-readable formatting for MCP REPL and tool output.
  *
- * @phpstan-import-type McpServerList from \CoquiBot\Toolkits\Mcp\McpManagementService
- * @phpstan-import-type McpServerSnapshot from \CoquiBot\Toolkits\Mcp\McpManagementService
+ * The snapshot shapes mirror what Coqui core's McpManagementService returns.
+ * They are declared locally (rather than imported) so this package needs no
+ * coqui dependency for static analysis.
+ *
+ * @phpstan-type McpAudit array{last_connected_at: ?string, last_connection_error: ?string, last_connection_duration_ms: ?int, last_disconnected_at: ?string, last_tested_at: ?string, last_test_succeeded: ?bool, last_test_error: ?string, last_test_duration_ms: ?int, last_tool_discovery_count: ?int}
+ * @phpstan-type McpServerSnapshot array{name: string, description: ?string, connected: bool, disabled: bool, loadingMode: string, serverName: ?string, serverVersion: ?string, toolCount: int, error: ?string, instructions: ?string, command: ?string, args: list<string>, env: array<string, string>, audit: McpAudit}
+ * @phpstan-type McpServerList array<string, McpServerSnapshot>
  */
 final class McpManagementFormatter
 {

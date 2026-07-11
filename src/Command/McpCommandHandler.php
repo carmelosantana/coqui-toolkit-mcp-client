@@ -11,7 +11,7 @@ use CoquiBot\Coqui\Contract\ToolkitCommandHelpEntry;
 use CoquiBot\Coqui\Contract\ToolkitCommandHelpProvider;
 use CoquiBot\Coqui\Contract\ToolkitReplContext;
 use CoquiBot\Coqui\Contract\ToolkitTabCompletionProvider;
-use CoquiBot\Toolkits\Mcp\McpManagementService;
+use CoquiBot\Coqui\Mcp\McpManagementService;
 use CoquiBot\Toolkits\Mcp\Support\McpManagementFormatter;
 
 /**

@@ -2,4 +2,7 @@ parameters:
     level: 8
     paths:
         - src
+    scanFiles:
+        - stubs/coqui_repl_contracts.php
+        - stubs/coqui_mcp_contracts.php
     tmpDir: .phpstan.cache
